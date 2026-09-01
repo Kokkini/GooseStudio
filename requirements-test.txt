@@ -1,0 +1,5 @@
+# Dependencies used by the local structural and conversion tests.
+numpy==2.4.3
+trimesh==4.12.2
+pygltflib==1.16.5
+pillow==12.1.1
