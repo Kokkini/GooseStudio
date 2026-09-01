@@ -1,0 +1,13 @@
+.git
+.env*
+build
+web/node_modules
+web/dist
+web/out
+web/runtime-config.json
+__pycache__
+*.pyc
+*.log
+docs
+tests
+.pytest_cache

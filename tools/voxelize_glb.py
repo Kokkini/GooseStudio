@@ -1,0 +1,1201 @@
+"""Convert a colored GLB surface into a colored voxel model.
+
+This is a regular Python script. It uses ``trimesh`` for GLB import/export,
+then samples source triangles with a density proportional to their area. The
+sample points are bucketed into a world-aligned voxel grid and the RGBA values
+in each occupied cell are averaged.
+
+The output can be a MagicaVoxel ``.vox`` file, an optimized colored ``.glb``,
+or an editable Blockbench ``.bbmodel``. The Blockbench and MagicaVoxel paths
+write one full voxel per occupied cell; the GLB path omits internal faces.
+Resolution can be specified as a world-space voxel size, as a target voxel
+count along one axis such as ``--height 32``, or as a target voxel count along
+the longest model side with ``--res``. The longest-side mode defaults to 128
+voxels.
+The source can be rotated clockwise around its vertical Y axis before bounds,
+resolution, sampling, and export are calculated with ``--rot`` (also available
+as ``--rotate`` and ``--rotate-clockwise``).
+
+Install and run in the repository's Conda environment:
+
+    conda activate py312
+    python tools/voxelize_glb.py \
+        --source scratch/voxelize_test/colored_cube.glb \
+        --output scratch/voxelize_test/colored_cube_voxelized.bbmodel \
+        --format bbmodel \
+        --voxel-size 0.25
+
+Input color is read from vertex/corner colors when present, then from simple
+material base colors, with a nearest-filtered image texture fallback for a
+directly connected base-color texture.
+
+Color aggregation defaults to ``average``. Use ``--color-mode dominant`` for
+hard-edged voxel art where samples from adjacent differently colored faces
+should not create blended edge colors.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import math
+import struct
+import sys
+import uuid
+import zlib
+from pathlib import Path
+
+import numpy as np
+import trimesh
+from trimesh.visual.material import PBRMaterial
+from trimesh.visual.texture import TextureVisuals
+
+
+FACE_DEFINITIONS = (
+    ((1, 0, 0), ((1, 0, 0), (1, 1, 0), (1, 1, 1), (1, 0, 1))),
+    ((-1, 0, 0), ((0, 0, 0), (0, 0, 1), (0, 1, 1), (0, 1, 0))),
+    ((0, 1, 0), ((0, 1, 0), (0, 1, 1), (1, 1, 1), (1, 1, 0))),
+    ((0, -1, 0), ((0, 0, 0), (1, 0, 0), (1, 0, 1), (0, 0, 1))),
+    ((0, 0, 1), ((0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1))),
+    ((0, 0, -1), ((0, 0, 0), (0, 1, 0), (1, 1, 0), (1, 0, 0))),
+)
+
+
+def parse_arguments():
+    script_arguments = sys.argv[1:]
+    # Accept the old Blender-style separator as a convenience while running
+    # the same command directly with Python.
+    if "--" in script_arguments:
+        script_arguments = script_arguments[script_arguments.index("--") + 1 :]
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", required=True, type=Path, help="Input .glb or .gltf mesh")
+    parser.add_argument(
+        "--output",
+        required=True,
+        type=Path,
+        help="Output voxel path (.vox, .glb, or .bbmodel)",
+    )
+    parser.add_argument(
+        "--format",
+        "--output-format",
+        dest="output_format",
+        choices=("vox", "glb", "bbmodel"),
+        help="Output format; otherwise inferred from the output extension",
+    )
+    resolution = parser.add_mutually_exclusive_group()
+    resolution.add_argument(
+        "--voxel-size",
+        type=float,
+        help="World-space edge length of each output voxel",
+    )
+    resolution.add_argument(
+        "--height",
+        type=int,
+        help="Target number of voxels along --height-axis; the model is rebased to a local grid",
+    )
+    resolution.add_argument(
+        "--res",
+        type=int,
+        default=128,
+        help="Target number of voxels along the longest model side (default: 128)",
+    )
+    parser.add_argument(
+        "--height-axis",
+        choices=("x", "y", "z"),
+        default="y",
+        help="Axis used by --height (default: y)",
+    )
+    parser.add_argument(
+        "--rot",
+        "--rotate",
+        "--rotate-clockwise",
+        dest="rotate_clockwise",
+        type=float,
+        default=0.0,
+        metavar="DEGREES",
+        help="Rotate clockwise around the model's vertical Y axis before voxelization",
+    )
+    parser.add_argument(
+        "--samples-per-voxel",
+        type=float,
+        default=6.0,
+        help="Surface samples per voxel-sized square of triangle area (default: 6)",
+    )
+    parser.add_argument(
+        "--color-mode",
+        choices=("average", "dominant"),
+        default="average",
+        help="Voxel color aggregation mode (default: average)",
+    )
+    parser.add_argument(
+        "--col-res",
+        type=int,
+        default=256,
+        metavar="LEVELS",
+        help="Number of endpoint-inclusive RGBA levels per channel (default: 256)",
+    )
+    parser.add_argument(
+        "--max-samples-per-triangle",
+        type=int,
+        default=10000,
+        help="Safety cap for samples generated by one triangle (default: 10000)",
+    )
+    parser.add_argument("--seed", type=int, default=12345, help="Deterministic sampling seed")
+    parser.add_argument(
+        "--center",
+        action="store_true",
+        help="Center GLB/Blockbench output around the voxel bounds",
+    )
+    parser.add_argument(
+        "--report",
+        type=Path,
+        help="Optional JSON report path containing sampling and voxel statistics",
+    )
+    arguments = parser.parse_args(script_arguments)
+    if arguments.voxel_size is not None and arguments.voxel_size <= 0.0:
+        parser.error("--voxel-size must be greater than zero")
+    if arguments.height is not None and arguments.height <= 0:
+        parser.error("--height must be greater than zero")
+    if arguments.res is not None and arguments.res <= 0:
+        parser.error("--res must be greater than zero")
+    if arguments.samples_per_voxel <= 0.0:
+        parser.error("--samples-per-voxel must be greater than zero")
+    if not 2 <= arguments.col_res <= 256:
+        parser.error("--col-res must be between 2 and 256")
+    if arguments.max_samples_per_triangle <= 0:
+        parser.error("--max-samples-per-triangle must be greater than zero")
+    return arguments
+
+
+def clamp_channel(value):
+    return max(0.0, min(1.0, float(value)))
+
+
+def normalize_color_array(values):
+    """Convert uint8/float RGB(A) arrays to float RGBA in the 0..1 range."""
+
+    if values is None:
+        return None
+    array = np.asarray(values)
+    if array.size == 0:
+        return None
+    if array.ndim == 1:
+        array = array.reshape(1, -1)
+    if array.shape[1] < 3:
+        return None
+    array = array[:, :4].astype(np.float64, copy=False)
+    if array.shape[1] == 3:
+        array = np.column_stack((array, np.ones(len(array), dtype=np.float64)))
+    if np.nanmax(array[:, :3]) > 1.0001:
+        array = array / 255.0
+    return np.clip(array, 0.0, 1.0)
+
+
+class TextureSampler:
+    """Nearest-filtered sampler for a trimesh/Pillow image object."""
+
+    def __init__(self, image, color_factor=None):
+        if hasattr(image, "convert"):
+            image = image.convert("RGBA")
+        pixels = np.asarray(image)
+        if pixels.ndim != 3 or pixels.shape[2] < 3:
+            raise ValueError("Texture image is not an RGB/RGBA image")
+        colors = normalize_color_array(pixels.reshape(-1, pixels.shape[2]))
+        self.pixels = colors.reshape(pixels.shape[0], pixels.shape[1], 4)
+        self.height, self.width = self.pixels.shape[:2]
+        factor = normalize_color_array(color_factor)
+        self.color_factor = factor[0] if factor is not None else None
+
+    def sample(self, uv):
+        coordinates = np.asarray(uv, dtype=np.float64)
+        if coordinates.ndim == 1:
+            coordinates = coordinates.reshape(1, 2)
+        u = np.mod(coordinates[:, 0], 1.0)
+        v = np.mod(coordinates[:, 1], 1.0)
+        # glTF UVs use a bottom-left origin, while Pillow/NumPy image rows
+        # use a top-left origin. Match trimesh's texture sampler by flipping
+        # V and using nearest rounding at the image boundary.
+        x = np.rint(u * (self.width - 1)).astype(np.int64) % self.width
+        y = np.rint((1.0 - v) * (self.height - 1)).astype(np.int64) % self.height
+        sampled = self.pixels[y, x]
+        if self.color_factor is None:
+            return sampled
+        return np.clip(sampled * self.color_factor, 0.0, 1.0)
+
+
+def material_color(mesh):
+    visual = getattr(mesh, "visual", None)
+    material = getattr(visual, "material", None) if visual is not None else None
+    for candidate in (
+        getattr(material, "main_color", None),
+        getattr(material, "baseColorFactor", None),
+        getattr(material, "base_color_factor", None),
+    ):
+        color = normalize_color_array(candidate)
+        if color is not None:
+            return color[0]
+    return np.array((0.8, 0.8, 0.8, 1.0), dtype=np.float64)
+
+
+def material_color_factor(material):
+    """Return a material multiplier for a base-color texture, if present."""
+
+    if material is None:
+        return None
+    for candidate in (
+        getattr(material, "baseColorFactor", None),
+        getattr(material, "base_color_factor", None),
+        getattr(material, "main_color", None),
+    ):
+        color = normalize_color_array(candidate)
+        if color is not None:
+            return color[0]
+    return None
+
+
+def build_color_source(mesh):
+    """Extract color data without asking trimesh to synthesize face colors."""
+
+    visual = getattr(mesh, "visual", None)
+    # GLB files with both COLOR_0 and a material are loaded by trimesh as
+    # TextureVisuals. In that case COLOR_0 is stored under the generic
+    # vertex-attribute name ``color`` rather than in ColorVisuals._data.
+    vertex_attributes = getattr(visual, "vertex_attributes", None) if visual is not None else None
+    if vertex_attributes is not None and "color" in vertex_attributes:
+        colors = normalize_color_array(vertex_attributes["color"])
+        if colors is not None and len(colors) == len(mesh.vertices):
+            return {"kind": "vertex", "colors": colors}
+
+    data = getattr(visual, "_data", {}) if visual is not None else {}
+    if "vertex_colors" in data:
+        colors = normalize_color_array(data["vertex_colors"])
+        if colors is not None and len(colors) == len(mesh.vertices):
+            return {"kind": "vertex", "colors": colors}
+    if "face_colors" in data:
+        colors = normalize_color_array(data["face_colors"])
+        if colors is not None and len(colors) == len(mesh.faces):
+            return {"kind": "face", "colors": colors}
+
+    # TextureVisuals keeps UVs on the visual and the image on its material.
+    # Depending on the trimesh version and the source GLB, the embedded image
+    # is exposed as either ``image`` or the glTF-standard
+    # ``baseColorTexture``. The latter is the form used by many imported GLBs.
+    uv = getattr(visual, "uv", None) if visual is not None else None
+    material = getattr(visual, "material", None) if visual is not None else None
+    image = getattr(material, "image", None) if material is not None else None
+    if image is None and material is not None:
+        image = getattr(material, "baseColorTexture", None)
+    if image is None and material is not None:
+        image = getattr(material, "base_color_texture", None)
+    if image is not None and uv is not None:
+        try:
+            return {
+                "kind": "texture",
+                "uv": np.asarray(uv),
+                "sampler": TextureSampler(image, material_color_factor(material)),
+            }
+        except (TypeError, ValueError):
+            pass
+    return {"kind": "constant", "color": material_color(mesh)}
+
+
+def load_meshes(source):
+    file_type = source.suffix.lower().lstrip(".") or None
+    scene = trimesh.load_scene(str(source), file_type=file_type, process=False)
+    dumped = scene.dump(concatenate=False)
+    meshes = []
+    for mesh in dumped:
+        if not isinstance(mesh, trimesh.Trimesh) or not len(mesh.faces):
+            continue
+
+        # scene.dump applies node transforms, but trimesh 5.0 can drop the
+        # generic COLOR_0 vertex attribute while copying a TextureVisuals
+        # mesh. Restore it from the source geometry before sampling.
+        source_name = mesh.metadata.get("name") if mesh.metadata else None
+        source_mesh = scene.geometry.get(source_name) if source_name else None
+        source_attributes = (
+            getattr(getattr(source_mesh, "visual", None), "vertex_attributes", None)
+            if source_mesh is not None
+            else None
+        )
+        if (
+            source_attributes is not None
+            and "color" in source_attributes
+            and hasattr(mesh.visual, "vertex_attributes")
+            and len(source_attributes["color"]) == len(mesh.vertices)
+        ):
+            mesh.visual.vertex_attributes["color"] = np.array(
+                source_attributes["color"], copy=True
+            )
+        meshes.append(mesh)
+    if not meshes:
+        raise RuntimeError("GLB imported without any mesh geometry")
+    return meshes
+
+
+def combined_mesh_bounds(meshes):
+    """Return the combined world-space bounds of loaded mesh objects."""
+
+    bounds_min = np.min(
+        np.vstack([np.asarray(mesh.vertices).min(axis=0) for mesh in meshes]), axis=0
+    )
+    bounds_max = np.max(
+        np.vstack([np.asarray(mesh.vertices).max(axis=0) for mesh in meshes]), axis=0
+    )
+    return bounds_min, bounds_max
+
+
+def rotate_meshes_clockwise(meshes, degrees):
+    """Rotate meshes clockwise around the combined model's vertical Y axis."""
+
+    if abs(degrees) <= 1e-12:
+        return None
+
+    bounds_min, bounds_max = combined_mesh_bounds(meshes)
+    pivot = np.array(
+        (
+            (bounds_min[0] + bounds_max[0]) * 0.5,
+            0.0,
+            (bounds_min[2] + bounds_max[2]) * 0.5,
+        ),
+        dtype=np.float64,
+    )
+    angle = math.radians(degrees)
+    cosine = math.cos(angle)
+    sine = math.sin(angle)
+    for mesh in meshes:
+        vertices = np.asarray(mesh.vertices, dtype=np.float64)
+        relative = vertices - pivot
+        rotated = np.array(relative, copy=True)
+        # Positive angle here is clockwise when viewed from above (+Y):
+        # +X rotates toward -Z.
+        rotated[:, 0] = cosine * relative[:, 0] + sine * relative[:, 2]
+        rotated[:, 2] = -sine * relative[:, 0] + cosine * relative[:, 2]
+        mesh.vertices = rotated + pivot
+    return pivot
+
+
+def voxel_grid_limits(bounds_min, bounds_max, voxel_size, grid_origin=None):
+    """Return inclusive grid-cell limits for a mesh bounding box.
+
+    ``grid_origin`` is normally the world origin. Height-based resolution uses
+    the source minimum bound instead so the requested axis count is exact and
+    the generated asset starts at local cell zero.
+
+    The small tolerance treats a coordinate which is numerically just beyond
+    an exact voxel boundary as being on that boundary. The upper bound uses
+    the cell on the mesh side of the boundary, preventing a point at the
+    maximum surface coordinate from creating an outside voxel.
+    """
+
+    if grid_origin is None:
+        grid_origin = np.zeros(3, dtype=np.float64)
+    scaled_min = (np.asarray(bounds_min, dtype=np.float64) - grid_origin) / voxel_size
+    scaled_max = (np.asarray(bounds_max, dtype=np.float64) - grid_origin) / voxel_size
+    # FBX/glTF transforms can move an exact boundary by a few ulps (for
+    # example, 1.0 becoming 1.00000012 after import). Keep that numerical
+    # noise from creating a one-voxel-thick outside layer.
+    boundary_tolerance = 1e-6
+    minimum = np.floor(scaled_min + boundary_tolerance).astype(np.int64)
+    maximum = np.ceil(scaled_max - boundary_tolerance).astype(np.int64) - 1
+    return minimum, np.maximum(minimum, maximum)
+
+
+def accumulate_sample(voxels, point, color, voxel_size, grid_origin, grid_min, grid_max):
+    cell_array = np.floor(
+        (np.asarray(point, dtype=np.float64) - grid_origin) / voxel_size
+    ).astype(np.int64)
+    cell_array = np.clip(cell_array, grid_min, grid_max)
+    cell = tuple(cell_array.tolist())
+    accumulator = voxels.setdefault(cell, [0.0, 0.0, 0.0, 0.0, 0, {}])
+    for channel in range(4):
+        accumulator[channel] += float(color[channel])
+    accumulator[4] += 1
+    color_key = quantized_rgba(color)
+    color_counts = accumulator[5]
+    color_counts[color_key] = color_counts.get(color_key, 0) + 1
+
+
+def sample_mesh(
+    mesh,
+    voxels,
+    arguments,
+    rng,
+    stats,
+    bounds_min,
+    bounds_max,
+    grid_origin,
+    grid_min,
+    grid_max,
+):
+    vertices = np.asarray(mesh.vertices, dtype=np.float64)
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    if len(vertices) == 0 or len(faces) == 0:
+        return
+    bounds_min[:] = np.minimum(bounds_min, vertices.min(axis=0))
+    bounds_max[:] = np.maximum(bounds_max, vertices.max(axis=0))
+
+    color_source = build_color_source(mesh)
+    triangles = vertices[faces]
+    cross = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+    areas = np.linalg.norm(cross, axis=1) * 0.5
+    voxel_area = arguments.voxel_size * arguments.voxel_size
+
+    for face_index, (triangle, area) in enumerate(zip(triangles, areas)):
+        stats["triangles"] += 1
+        if area <= 1e-12:
+            stats["degenerate_triangles"] += 1
+            continue
+        requested_samples = max(1, math.ceil(float(area) / voxel_area * arguments.samples_per_voxel))
+        sample_count = min(requested_samples, arguments.max_samples_per_triangle)
+        if sample_count < requested_samples:
+            stats["capped_triangles"] += 1
+
+        root_random = np.sqrt(rng.random(sample_count))
+        second_random = rng.random(sample_count)
+        weights = np.column_stack(
+            (
+                1.0 - root_random,
+                root_random * (1.0 - second_random),
+                root_random * second_random,
+            )
+        )
+        points = weights[:, 0, None] * triangle[0]
+        points += weights[:, 1, None] * triangle[1]
+        points += weights[:, 2, None] * triangle[2]
+
+        if color_source["kind"] == "vertex":
+            corner_colors = color_source["colors"][faces[face_index]]
+            colors = weights @ corner_colors
+        elif color_source["kind"] == "face":
+            colors = np.repeat(color_source["colors"][face_index][None, :], sample_count, axis=0)
+        elif color_source["kind"] == "texture":
+            corner_uv = color_source["uv"][faces[face_index]]
+            colors = color_source["sampler"].sample(weights @ corner_uv)
+        else:
+            colors = np.repeat(color_source["color"][None, :], sample_count, axis=0)
+
+        for point, color in zip(points, colors):
+            accumulate_sample(
+                voxels,
+                point,
+                color,
+                arguments.voxel_size,
+                grid_origin,
+                grid_min,
+                grid_max,
+            )
+        stats["samples"] += sample_count
+
+
+def quantize_color(color, color_resolution=256):
+    """Quantize RGBA to endpoint-inclusive levels."""
+
+    values = np.asarray(color, dtype=np.float64)
+    if values.shape != (4,):
+        raise ValueError("Voxel colors must contain exactly four RGBA channels")
+    values = np.clip(values, 0.0, 1.0)
+    if color_resolution < 256:
+        level_count = color_resolution - 1
+        values = np.rint(values * level_count) / level_count
+    return tuple(float(value) for value in values)
+
+
+def average_voxels(voxels, color_mode="average", color_resolution=256):
+    averaged = {}
+    for cell, accumulator in voxels.items():
+        if color_mode == "dominant":
+            dominant = max(accumulator[5], key=accumulator[5].get)
+            color = tuple(channel / 255.0 for channel in dominant)
+        else:
+            count = accumulator[4]
+            color = tuple(accumulator[channel] / count for channel in range(4))
+        averaged[cell] = quantize_color(color, color_resolution)
+    return averaged
+
+
+def quantized_rgba(color):
+    return tuple(int(round(clamp_channel(channel) * 255.0)) for channel in color)
+
+
+def srgb_to_linear(color):
+    """Convert an sRGB RGBA color to the linear values required by glTF COLOR_0."""
+
+    values = np.asarray(color, dtype=np.float64).copy()
+    values[:3] = np.where(
+        values[:3] <= 0.04045,
+        values[:3] / 12.92,
+        ((values[:3] + 0.055) / 1.055) ** 2.4,
+    )
+    return np.clip(values, 0.0, 1.0)
+
+
+def color_statistics(averaged_voxels):
+    if not averaged_voxels:
+        return {
+            "unique_8bit_colors": 0,
+            "mean_rgba": None,
+            "min_rgba": None,
+            "max_rgba": None,
+        }
+    colors = list(averaged_voxels.values())
+    return {
+        "unique_8bit_colors": len({quantized_rgba(color) for color in colors}),
+        "mean_rgba": [sum(color[channel] for color in colors) / len(colors) for channel in range(4)],
+        "min_rgba": [min(color[channel] for color in colors) for channel in range(4)],
+        "max_rgba": [max(color[channel] for color in colors) for channel in range(4)],
+    }
+
+
+def _build_glb_mesh_data(
+    averaged_voxels,
+    voxel_size,
+    center_offset,
+    include_vertex_colors=True,
+):
+    vertices = []
+    faces = []
+    vertex_colors = []
+    display_color_keys = []
+    occupied = set(averaged_voxels)
+
+    for cell in sorted(averaged_voxels):
+        center = np.asarray(
+            ((cell[0] + 0.5) * voxel_size, (cell[1] + 0.5) * voxel_size, (cell[2] + 0.5) * voxel_size),
+            dtype=np.float64,
+        ) - center_offset
+        # Texture samples and the other converter color paths are kept as
+        # display/sRGB values for BBModel and VOX. glTF COLOR_0 is a linear
+        # multiplier, so convert only at this GLB export boundary.
+        display_color = quantized_rgba(averaged_voxels[cell])
+        color = quantized_rgba(srgb_to_linear(averaged_voxels[cell]))
+        for neighbor_offset, corners in FACE_DEFINITIONS:
+            neighbor = tuple(cell[channel] + neighbor_offset[channel] for channel in range(3))
+            if neighbor in occupied:
+                continue
+            first_vertex = len(vertices)
+            for corner in corners:
+                vertices.append(center + (np.asarray(corner, dtype=np.float64) - 0.5) * voxel_size)
+                if include_vertex_colors:
+                    vertex_colors.append(color)
+                display_color_keys.append(display_color)
+            faces.append(tuple(first_vertex + index for index in range(4)))
+
+    mesh_arguments = {
+        "vertices": np.asarray(vertices, dtype=np.float64),
+        "faces": np.asarray(faces, dtype=np.int64),
+        "process": False,
+    }
+    if include_vertex_colors:
+        mesh_arguments["vertex_colors"] = np.asarray(vertex_colors, dtype=np.uint8)
+    return (
+        trimesh.Trimesh(**mesh_arguments),
+        np.asarray(display_color_keys, dtype=np.uint8),
+    )
+
+
+def build_glb_mesh(averaged_voxels, voxel_size, center_offset):
+    """Build the legacy vertex-colored mesh used by the generic voxelizer."""
+
+    mesh, _ = _build_glb_mesh_data(averaged_voxels, voxel_size, center_offset)
+    return mesh
+
+
+def _build_palette_texture(display_color_keys, tile_size=4):
+    """Create a small solid-color atlas and per-face center UVs.
+
+    The atlas avoids relying on a viewer-specific interpretation of COLOR_0.
+    Each tile is solid and the exported sampler is nearest-filtered, so every
+    exposed voxel face resolves to exactly one source color.
+    """
+
+    try:
+        from PIL import Image
+    except ImportError as error:
+        raise RuntimeError(
+            "Palette-textured GLB output requires Pillow in the py312 environment"
+        ) from error
+
+    color_keys = [tuple(int(channel) for channel in color) for color in display_color_keys]
+    palette = sorted(set(color_keys))
+    if not palette:
+        raise RuntimeError("Cannot create a GLB palette texture without face colors")
+    columns = max(1, math.ceil(math.sqrt(len(palette))))
+    rows = math.ceil(len(palette) / columns)
+    width = columns * tile_size
+    height = rows * tile_size
+    pixels = np.zeros((height, width, 4), dtype=np.uint8)
+    uv_by_color = {}
+    for index, color in enumerate(palette):
+        slot_x = (index % columns) * tile_size
+        slot_y = (index // columns) * tile_size
+        pixels[slot_y : slot_y + tile_size, slot_x : slot_x + tile_size] = color
+        # TextureVisuals uses a bottom-left UV origin internally. The image
+        # rows are top-left-origin, so flip V before trimesh flips it again
+        # for the glTF file.
+        uv_by_color[color] = (
+            (slot_x + tile_size * 0.5) / width,
+            1.0 - (slot_y + tile_size * 0.5) / height,
+        )
+    uvs = np.asarray([uv_by_color[color] for color in color_keys], dtype=np.float64)
+    image = Image.frombytes("RGBA", (width, height), pixels.tobytes())
+    return uvs, image, {
+        "palette_texture": True,
+        "palette_color_count": len(palette),
+        "palette_texture_width": width,
+        "palette_texture_height": height,
+        "palette_texture_tile_size": tile_size,
+        "vertex_color_attribute": False,
+    }
+
+
+def _force_nearest_texture_sampling(tree):
+    """Set generated palette textures to nearest filtering in the GLB."""
+
+    textures = tree.get("textures", [])
+    if not textures:
+        return
+    sampler_index = len(tree.setdefault("samplers", []))
+    tree["samplers"].append(
+        {
+            "magFilter": 9728,  # NEAREST
+            "minFilter": 9728,  # NEAREST
+            "wrapS": 10497,  # REPEAT
+            "wrapT": 10497,  # REPEAT
+        }
+    )
+    for texture in textures:
+        texture["sampler"] = sampler_index
+
+
+def write_glb(
+    averaged_voxels,
+    output,
+    voxel_size,
+    center_offset,
+    palette_texture=False,
+):
+    mesh, display_color_keys = _build_glb_mesh_data(
+        averaged_voxels,
+        voxel_size,
+        center_offset,
+        include_vertex_colors=not palette_texture,
+    )
+    if palette_texture:
+        uvs, image, texture_stats = _build_palette_texture(display_color_keys)
+        alpha_mode = "BLEND" if np.any(display_color_keys[:, 3] < 255) else "OPAQUE"
+        mesh.visual = TextureVisuals(
+            uv=uvs,
+            material=PBRMaterial(
+                name="Voxel Palette",
+                baseColorFactor=[1.0, 1.0, 1.0, 1.0],
+                metallicFactor=0.0,
+                roughnessFactor=1.0,
+                alphaMode=alpha_mode,
+                baseColorTexture=image,
+            ),
+        )
+        mesh.export(
+            file_obj=str(output),
+            file_type="glb",
+            tree_postprocessor=_force_nearest_texture_sampling,
+        )
+        material_stats = {
+            "material_mode": "embedded_palette_texture",
+            "metallic_factor": 0.0,
+            "roughness_factor": 1.0,
+            "alpha_mode": alpha_mode,
+        }
+        material_stats.update(texture_stats)
+    else:
+        # A ColorVisuals mesh exports COLOR_0, but without a material Blender
+        # imports the attribute and displays the mesh with its default gray.
+        # A white non-metal PBR material makes viewers consume vertex colors.
+        mesh.visual.material = PBRMaterial(
+            name="Voxel Vertex Colors",
+            baseColorFactor=[1.0, 1.0, 1.0, 1.0],
+            metallicFactor=0.0,
+            roughnessFactor=1.0,
+        )
+        mesh.export(file_obj=str(output), file_type="glb")
+        material_stats = {
+            "material_mode": "vertex_color",
+            "metallic_factor": 0.0,
+            "roughness_factor": 1.0,
+            "vertex_color_attribute": True,
+        }
+    return {
+        "exposed_face_count": len(mesh.faces),
+        "vertex_count": len(mesh.vertices),
+        **material_stats,
+    }
+
+
+def png_chunk(chunk_type, payload):
+    checksum = zlib.crc32(chunk_type + payload) & 0xFFFFFFFF
+    return struct.pack(">I", len(payload)) + chunk_type + payload + struct.pack(">I", checksum)
+
+
+def make_rgba_png(width, height, pixels):
+    scanlines = bytearray()
+    for y in range(height):
+        scanlines.append(0)
+        for x in range(width):
+            scanlines.extend(pixels[y * width + x])
+    header = b"\x89PNG\r\n\x1a\n"
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    return (
+        header
+        + png_chunk(b"IHDR", ihdr)
+        + png_chunk(b"IDAT", zlib.compress(bytes(scanlines), level=9))
+        + png_chunk(b"IEND", b"")
+    )
+
+
+def bbmodel_translation(averaged_voxels, centered):
+    if not centered:
+        return (0.0, 0.0, 0.0)
+    minimum = tuple(min(cell[channel] for cell in averaged_voxels) for channel in range(3))
+    maximum = tuple(max(cell[channel] for cell in averaged_voxels) for channel in range(3))
+    return tuple(-0.5 * (minimum[channel] + maximum[channel] + 1) for channel in range(3))
+
+
+def build_bbmodel_texture(averaged_voxels):
+    palette = sorted({quantized_rgba(color) for color in averaged_voxels.values()})
+    slots_per_row = max(1, math.ceil(math.sqrt(len(palette))))
+    slot_size = 2
+    texture_size = slots_per_row * slot_size
+    pixels = [(0, 0, 0, 0)] * (texture_size * texture_size)
+    uv_by_color = {}
+    for index, color in enumerate(palette):
+        slot_x = (index % slots_per_row) * slot_size
+        slot_y = (index // slots_per_row) * slot_size
+        for y in range(slot_y, slot_y + slot_size):
+            for x in range(slot_x, slot_x + slot_size):
+                pixels[y * texture_size + x] = color
+        uv_by_color[color] = [
+            slot_x + 0.25,
+            slot_y + 0.25,
+            slot_x + slot_size - 0.25,
+            slot_y + slot_size - 0.25,
+        ]
+    return palette, uv_by_color, texture_size, make_rgba_png(texture_size, texture_size, pixels)
+
+
+def make_bbmodel_element(cell, color_index, uv, translation, sequence):
+    from_coordinate = [cell[channel] + translation[channel] for channel in range(3)]
+    to_coordinate = [from_coordinate[channel] + 1 for channel in range(3)]
+    uuid_value = str(uuid.uuid4())
+    faces = {
+        face_name: {"uv": list(uv), "texture": 0}
+        for face_name in ("north", "east", "south", "west", "up", "down")
+    }
+    return {
+        "name": f"voxel_{sequence:06d}",
+        "box_uv": False,
+        "render_order": "default",
+        "locked": False,
+        "export": True,
+        "scope": 0,
+        "allow_mirror_modeling": True,
+        "from": from_coordinate,
+        "to": to_coordinate,
+        "autouv": 0,
+        "color": color_index,
+        "origin": list(from_coordinate),
+        "faces": faces,
+        "type": "cube",
+        "uuid": uuid_value,
+    }
+
+
+def write_bbmodel(averaged_voxels, output, source_name, centered):
+    palette, uv_by_color, texture_size, png_data = build_bbmodel_texture(averaged_voxels)
+    palette_indices = {color: index for index, color in enumerate(palette)}
+    translation = bbmodel_translation(averaged_voxels, centered)
+    elements = []
+    for sequence, cell in enumerate(sorted(averaged_voxels), 1):
+        color = quantized_rgba(averaged_voxels[cell])
+        elements.append(
+            make_bbmodel_element(
+                cell,
+                palette_indices[color],
+                uv_by_color[color],
+                translation,
+                sequence,
+            )
+        )
+
+    group_uuid = str(uuid.uuid4())
+    element_uuids = [element["uuid"] for element in elements]
+    model_name = output.stem
+    group = {
+        "name": "VoxelizedModel",
+        "uuid": group_uuid,
+        "export": True,
+        "locked": False,
+        "scope": 0,
+        "selected": False,
+        "_static": {"properties": {}, "temp_data": {}},
+        "origin": [0, 0, 0],
+        "rotation": [0, 0, 0],
+        "color": 0,
+        "children": element_uuids,
+        "reset": False,
+        "shade": True,
+        "mirror_uv": False,
+        "visibility": True,
+        "autouv": 0,
+        "isOpen": True,
+        "primary_selected": False,
+    }
+    texture_name = f"{model_name}.png"
+    texture = {
+        "name": texture_name,
+        "relative_path": texture_name,
+        "folder": "textures",
+        "namespace": "",
+        "id": "0",
+        "group": "",
+        "scope": 0,
+        "width": texture_size,
+        "height": texture_size,
+        "uv_width": texture_size,
+        "uv_height": texture_size,
+        "particle": False,
+        "use_as_default": True,
+        "layers_enabled": False,
+        "sync_to_project": "",
+        "file_format": "png",
+        "render_mode": "default",
+        "render_sides": "auto",
+        "wrap_mode": "limited",
+        "pbr_channel": "color",
+        "fps": 7,
+        "frame_time": 1,
+        "frame_order_type": "loop",
+        "frame_order": "",
+        "frame_interpolate": False,
+        "visible": True,
+        "internal": True,
+        "saved": True,
+        "uuid": str(uuid.uuid4()),
+        "source": "data:image/png;base64," + base64.b64encode(png_data).decode("ascii"),
+    }
+    model = {
+        "meta": {"format_version": "5.0", "model_format": "free", "box_uv": False},
+        "name": model_name,
+        "model_identifier": model_name,
+        "credit": f"Voxelized from {source_name}",
+        "visible_box": [1, 1, 0],
+        "variable_placeholders": "",
+        "multi_file_ruleset": "",
+        "variable_placeholder_buttons": [],
+        "timeline_setups": [],
+        "unhandled_root_fields": {},
+        "resolution": {"width": texture_size, "height": texture_size},
+        "elements": elements,
+        "groups": [group],
+        "outliner": [{"uuid": group_uuid, "isOpen": True, "children": element_uuids}],
+        "textures": [texture],
+    }
+    output.write_text(json.dumps(model, indent=2) + "\n", encoding="utf-8")
+    return {
+        "element_count": len(elements),
+        "palette_color_count": len(palette),
+        "texture_width": texture_size,
+        "texture_height": texture_size,
+        "axis_mapping": "GLB XYZ -> Blockbench XYZ",
+    }
+
+
+def split_color_box(indices, colors):
+    if len(indices) < 2:
+        return None
+    ranges = [
+        max(colors[index][channel] for index in indices)
+        - min(colors[index][channel] for index in indices)
+        for channel in range(4)
+    ]
+    channel = max(range(4), key=lambda value: (ranges[value], -value))
+    ordered = sorted(indices, key=lambda index: colors[index][channel])
+    midpoint = len(ordered) // 2
+    return ordered[:midpoint], ordered[midpoint:]
+
+
+def build_vox_palette(color_keys, maximum=255):
+    if len(color_keys) <= maximum:
+        return list(color_keys), {color: index + 1 for index, color in enumerate(color_keys)}
+
+    colors = list(color_keys)
+    boxes = [list(range(len(colors)))]
+    while len(boxes) < maximum:
+        candidates = [box for box in boxes if len(box) > 1]
+        if not candidates:
+            break
+        box = max(
+            candidates,
+            key=lambda item: (
+                max(
+                    max(colors[index][channel] for index in item)
+                    - min(colors[index][channel] for index in item)
+                    for channel in range(4)
+                )
+                * len(item),
+                len(item),
+            ),
+        )
+        boxes.remove(box)
+        split = split_color_box(box, colors)
+        if split is None:
+            boxes.append(box)
+            break
+        boxes.extend(split)
+
+    palette = [
+        tuple(round(sum(colors[index][channel] for index in box) / len(box)) for channel in range(4))
+        for box in boxes
+    ]
+    mapping = {}
+    for color in color_keys:
+        palette_index = min(
+            range(len(palette)),
+            key=lambda index: sum((color[channel] - palette[index][channel]) ** 2 for channel in range(4)),
+        )
+        mapping[color] = palette_index + 1
+    return palette, mapping
+
+
+def make_vox_chunk(chunk_id, content, children=b""):
+    return chunk_id + struct.pack("<ii", len(content), len(children)) + content + children
+
+
+def write_vox(averaged_voxels, output):
+    # MagicaVoxel's conventional axes are X, depth-Y, height-Z. The
+    # Blockbench VOX importer maps them to Blockbench X, Z, Y, so this writes
+    # GLB [x, y, z] as VOX [x, z, y].
+    voxels = {
+        (cell[0], cell[2], cell[1]): quantized_rgba(color)
+        for cell, color in averaged_voxels.items()
+    }
+    minimum = tuple(min(coordinate[channel] for coordinate in voxels) for channel in range(3))
+    maximum = tuple(max(coordinate[channel] for coordinate in voxels) for channel in range(3))
+    dimensions = tuple(maximum[channel] - minimum[channel] + 1 for channel in range(3))
+    if any(dimension > 256 for dimension in dimensions):
+        raise RuntimeError(
+            f"VOX output dimensions exceed the classic 256-cell limit: {dimensions}"
+        )
+
+    color_keys = sorted(set(voxels.values()))
+    palette, palette_indices = build_vox_palette(color_keys)
+    entries = []
+    for coordinate in sorted(voxels):
+        normalized = tuple(int(coordinate[channel] - minimum[channel]) for channel in range(3))
+        entries.append((*normalized, palette_indices[voxels[coordinate]]))
+
+    size_chunk = make_vox_chunk(b"SIZE", struct.pack("<3i", *dimensions))
+    xyzi_content = struct.pack("<I", len(entries)) + b"".join(
+        struct.pack("<BBBB", *entry) for entry in entries
+    )
+    xyzi_chunk = make_vox_chunk(b"XYZI", xyzi_content)
+    # VOX stores 255 usable colors as raw palette entries 0..254, while voxel
+    # color indices refer to them as 1..255. Do not prepend a dummy entry here:
+    # raw entry 0 is the color for voxel index 1.
+    rgba_values = palette + [(0, 0, 0, 255)] * (256 - len(palette))
+    rgba_chunk = make_vox_chunk(
+        b"RGBA",
+        b"".join(struct.pack("<BBBB", *color) for color in rgba_values),
+    )
+    children = size_chunk + xyzi_chunk + rgba_chunk
+    output.write_bytes(b"VOX " + struct.pack("<I", 150) + make_vox_chunk(b"MAIN", b"", children))
+    return {
+        "voxel_count": len(entries),
+        "palette_color_count": len(palette),
+        "palette_reduced": len(color_keys) > len(palette),
+        "dimensions": dimensions,
+        "axis_mapping": "GLB XYZ -> VOX XZY",
+    }
+
+
+def write_report(path, report):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+
+def resolve_output_format(output, requested_format):
+    if requested_format:
+        suffix = output.suffix.lower().lstrip(".")
+        if suffix and suffix != requested_format:
+            raise RuntimeError(
+                f"Output extension .{suffix} does not match --format {requested_format}"
+            )
+        return requested_format
+    suffix = output.suffix.lower().lstrip(".")
+    if suffix not in {"vox", "glb", "bbmodel"}:
+        raise RuntimeError(
+            "Could not infer output format; use --format vox, --format glb, or --format bbmodel"
+        )
+    return suffix
+
+
+def main():
+    arguments = parse_arguments()
+    source = arguments.source.resolve()
+    output = arguments.output.resolve()
+    output_format = resolve_output_format(output, arguments.output_format)
+    if not source.is_file():
+        raise RuntimeError(f"GLB source does not exist: {source}")
+    if source == output:
+        raise RuntimeError("Source and output paths must be different")
+    output.parent.mkdir(parents=True, exist_ok=True)
+
+    meshes = load_meshes(source)
+    rotation_pivot = rotate_meshes_clockwise(
+        meshes,
+        arguments.rotate_clockwise,
+    )
+    voxels = {}
+    stats = {
+        "objects": len(meshes),
+        "triangles": 0,
+        "degenerate_triangles": 0,
+        "capped_triangles": 0,
+        "samples": 0,
+    }
+    bounds_min, bounds_max = combined_mesh_bounds(meshes)
+    if arguments.height is not None:
+        height_axis_index = "xyz".index(arguments.height_axis)
+        height_extent = bounds_max[height_axis_index] - bounds_min[height_axis_index]
+        if height_extent <= 1e-12:
+            raise RuntimeError(
+                f"Cannot derive voxel size: source has no extent along {arguments.height_axis}-axis"
+            )
+        # Height mode uses a local grid beginning at the source bounds. This
+        # makes the requested cell count exact and gives the generated asset a
+        # clean origin instead of inheriting arbitrary source-world offsets.
+        arguments.voxel_size = float(height_extent / arguments.height)
+        grid_origin = np.array(bounds_min, dtype=np.float64, copy=True)
+        resolution_mode = "height"
+    elif arguments.voxel_size is None:
+        extents = bounds_max - bounds_min
+        longest_extent = float(np.max(extents))
+        if longest_extent <= 1e-12:
+            raise RuntimeError("Cannot derive voxel size: source has no extent")
+        arguments.voxel_size = float(longest_extent / arguments.res)
+        # Resolution mode uses a local grid beginning at the source bounds.
+        # This makes the longest dimension exactly --res cells and keeps the
+        # generated asset convenient to place in Blockbench or a game scene.
+        grid_origin = np.array(bounds_min, dtype=np.float64, copy=True)
+        resolution_mode = "longest_side"
+    else:
+        grid_origin = np.zeros(3, dtype=np.float64)
+        resolution_mode = "voxel_size"
+
+    grid_min, grid_max = voxel_grid_limits(
+        bounds_min,
+        bounds_max,
+        arguments.voxel_size,
+        grid_origin,
+    )
+    if arguments.height is not None:
+        actual_height = int(grid_max[height_axis_index] - grid_min[height_axis_index] + 1)
+        if actual_height != arguments.height:
+            raise RuntimeError(
+                f"Could not create exactly {arguments.height} grid cells along "
+                f"{arguments.height_axis}-axis; calculated {actual_height}"
+            )
+    grid_dimensions = (grid_max - grid_min + 1).astype(np.int64)
+    rng = np.random.default_rng(arguments.seed)
+    for mesh in meshes:
+        sample_mesh(
+            mesh,
+            voxels,
+            arguments,
+            rng,
+            stats,
+            bounds_min,
+            bounds_max,
+            grid_origin,
+            grid_min,
+            grid_max,
+        )
+    if not voxels:
+        raise RuntimeError("The imported meshes produced no occupied voxels")
+
+    averaged_voxels = average_voxels(
+        voxels,
+        arguments.color_mode,
+        arguments.col_res,
+    )
+    format_stats = {}
+    if output_format == "glb":
+        center_offset = np.zeros(3, dtype=np.float64)
+        if arguments.center:
+            voxel_bounds_min = grid_min.astype(np.float64) * arguments.voxel_size
+            voxel_bounds_max = (grid_max.astype(np.float64) + 1.0) * arguments.voxel_size
+            center_offset = (voxel_bounds_min + voxel_bounds_max) * 0.5
+        format_stats.update(write_glb(averaged_voxels, output, arguments.voxel_size, center_offset))
+    elif output_format == "bbmodel":
+        format_stats.update(write_bbmodel(averaged_voxels, output, source.name, arguments.center))
+    else:
+        format_stats.update(write_vox(averaged_voxels, output))
+
+    report = {
+        "source": str(source),
+        "output": str(output),
+        "output_format": output_format,
+        "voxel_size": arguments.voxel_size,
+        "resolution_mode": resolution_mode,
+        "requested_resolution": arguments.res if resolution_mode == "longest_side" else None,
+        "requested_height": arguments.height,
+        "height_axis": arguments.height_axis if arguments.height is not None else None,
+        "rotation_clockwise_degrees": arguments.rotate_clockwise,
+        "rotation_axis": "y",
+        "rotation_pivot": rotation_pivot.tolist() if rotation_pivot is not None else None,
+        "grid_origin": grid_origin.tolist(),
+        "grid_dimensions": grid_dimensions.tolist(),
+        "samples_per_voxel": arguments.samples_per_voxel,
+        "color_mode": arguments.color_mode,
+        "color_resolution": arguments.col_res,
+        "max_samples_per_triangle": arguments.max_samples_per_triangle,
+        "seed": arguments.seed,
+        "centered": arguments.center,
+        "source_mesh_bounds": {"min": bounds_min.tolist(), "max": bounds_max.tolist()},
+        "voxel_grid_bounds": {"min": grid_min.tolist(), "max": grid_max.tolist()},
+        "voxel_count": len(averaged_voxels),
+        **stats,
+        **color_statistics(averaged_voxels),
+        **format_stats,
+    }
+    if arguments.report:
+        write_report(arguments.report.resolve(), report)
+
+    print(
+        f"Voxelized {stats['objects']} mesh object(s), {stats['triangles']} triangles, "
+        f"and {stats['samples']} surface samples into {len(averaged_voxels)} voxels."
+    )
+    if "exposed_face_count" in format_stats:
+        print(f"Exposed voxel faces: {format_stats['exposed_face_count']}")
+    if "vertex_count" in format_stats:
+        print(f"GLB vertices: {format_stats['vertex_count']}")
+    if "palette_color_count" in format_stats:
+        print(f"Output palette colors: {format_stats['palette_color_count']}")
+    if "element_count" in format_stats:
+        print(f"Blockbench cube elements: {format_stats['element_count']}")
+    print(f"Grid dimensions (XYZ): {tuple(int(value) for value in grid_dimensions)}")
+    if abs(arguments.rotate_clockwise) > 1e-12:
+        print(
+            f"Applied clockwise Y-axis rotation: {arguments.rotate_clockwise:g} degrees"
+        )
+    print(f"Voxel color mode: {arguments.color_mode}")
+    print(f"RGBA color levels per channel: {arguments.col_res}")
+    print(f"Unique 8-bit voxel colors: {report['unique_8bit_colors']}")
+    print(f"Wrote voxel {output_format}: {output}")
+    if arguments.report:
+        print(f"Wrote report: {arguments.report.resolve()}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,127 @@
+{
+  "14": {
+    "inputs": {
+      "image": "input.png"
+    },
+    "class_type": "Hy3D21LoadImageWithTransparency",
+    "_meta": { "title": "Load Image with Transparency" }
+  },
+  "54": {
+    "inputs": {
+      "image": ["14", 2],
+      "model": "hunyuan3D-dit-v2-1-fp16.ckpt",
+      "steps": 32,
+      "guidance_scale": 6,
+      "seed": 518321210975604,
+      "attention_mode": "sdpa"
+    },
+    "class_type": "Hy3D21MeshGenerator",
+    "_meta": { "title": "Generate 3D Shape" }
+  },
+  "4": {
+    "inputs": {
+      "model_name": "Hunyuan3D-vae-v2-1-fp16.ckpt"
+    },
+    "class_type": "Hy3D21VAELoader",
+    "_meta": { "title": "Load 3D VAE" }
+  },
+  "9": {
+    "inputs": {
+      "vae": ["4", 0],
+      "latents": ["54", 0],
+      "box_v": 1.01,
+      "octree_resolution": 256,
+      "num_chunks": 16000,
+      "mc_level": 0,
+      "mc_algo": "mc",
+      "enable_flash_vdm": true,
+      "force_offload": false
+    },
+    "class_type": "Hy3D21VAEDecode",
+    "_meta": { "title": "Decode 3D Shape" }
+  },
+  "43": {
+    "inputs": {
+      "trimesh": ["9", 0],
+      "remove_floaters": true,
+      "remove_degenerate_faces": true,
+      "reduce_faces": true,
+      "max_facenum": 200000,
+      "smooth_normals": false
+    },
+    "class_type": "Hy3D21PostprocessMesh",
+    "_meta": { "title": "Clean Up 3D Shape" }
+  },
+  "44": {
+    "inputs": {
+      "trimesh": ["43", 0],
+      "enabled": true,
+      "median_multiplier": 5.0,
+      "max_removed_face_fraction": 0.25,
+      "fill_holes": true
+    },
+    "class_type": "RepairLongEdgeOutliers",
+    "_meta": { "title": "Repair Long Edge Outliers" }
+  },
+  "45": {
+    "inputs": {
+      "trimesh": ["44", 0]
+    },
+    "class_type": "Hy3D21MeshUVWrap",
+    "_meta": { "title": "Prepare Surface" }
+  },
+  "19": {
+    "inputs": {
+      "camera_azimuths": "0, 90, 180, 270, 0, 180",
+      "camera_elevations": "0, 0, 0, 0, 90, -90",
+      "view_weights": "1, 0.5, 1, 0.5, 1, 1",
+      "ortho_scale": 1.1
+    },
+    "class_type": "Hy3D21CameraConfig",
+    "_meta": { "title": "Set Texture Views" }
+  },
+  "20": {
+    "inputs": {
+      "trimesh": ["45", 0],
+      "camera_config": ["19", 0],
+      "image": ["14", 2],
+      "view_size": 768,
+      "steps": 10,
+      "guidance_scale": 3,
+      "texture_size": 1024,
+      "unwrap_mesh": false,
+      "seed": 629790424419442
+    },
+    "class_type": "Hy3DMultiViewsGenerator",
+    "_meta": { "title": "Create Surface Texture" }
+  },
+  "21": {
+    "inputs": {
+      "pipeline": ["20", 0],
+      "camera_config": ["19", 0],
+      "albedo": ["20", 1],
+      "mr": ["20", 2]
+    },
+    "class_type": "Hy3DBakeMultiViews",
+    "_meta": { "title": "Bake Surface Texture" }
+  },
+  "49": {
+    "inputs": {
+      "pipeline": ["21", 0],
+      "albedo": ["21", 1],
+      "albedo_mask": ["21", 2],
+      "mr": ["21", 3],
+      "mr_mask": ["21", 4]
+    },
+    "class_type": "Hy3DInPaint",
+    "_meta": { "title": "Fill Texture Gaps" }
+  },
+  "57": {
+    "inputs": {
+      "pipeline": ["49", 2],
+      "filename_prefix": "mesh/REPLACE_JOB_ID/hy_mesh"
+    },
+    "class_type": "Hy3D21SavePaintedMesh",
+    "_meta": { "title": "Save Textured 3D Model" }
+  }
+}

@@ -1,0 +1,229 @@
+{
+  "models": [
+    {
+      "id": "ultrasharp-4x",
+      "repository": "uwg/upscaler",
+      "filename": "ESRGAN/4x-UltraSharp.pth",
+      "destination": "upscale_models/4x-UltraSharp.pth",
+      "sha256": "a5812231fc936b42af08a5edba784195495d303d5b3248c24489ef0c4021fe01"
+    },
+    {
+      "id": "z-image-turbo-bf16",
+      "repository": "Comfy-Org/z_image_turbo",
+      "filename": "split_files/diffusion_models/z_image_turbo_bf16.safetensors",
+      "destination": "diffusion_models/z_image_turbo_bf16.safetensors"
+    },
+    {
+      "id": "z-image-qwen3-4b",
+      "repository": "Comfy-Org/z_image_turbo",
+      "filename": "split_files/text_encoders/qwen_3_4b.safetensors",
+      "destination": "text_encoders/qwen_3_4b.safetensors"
+    },
+    {
+      "id": "z-image-vae",
+      "repository": "Comfy-Org/z_image_turbo",
+      "filename": "split_files/vae/ae.safetensors",
+      "destination": "vae/ae.safetensors"
+    },
+    {
+      "id": "qwen-image-vae",
+      "repository": "Comfy-Org/Qwen-Image_ComfyUI",
+      "filename": "split_files/vae/qwen_image_vae.safetensors",
+      "destination": "vae/qwen_image_vae.safetensors"
+    },
+    {
+      "id": "qwen-vl-7b-fp8",
+      "repository": "Comfy-Org/Qwen-Image_ComfyUI",
+      "filename": "split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "destination": "text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors"
+    },
+    {
+      "id": "qwen-image-edit-2509-fp8",
+      "repository": "Comfy-Org/Qwen-Image-Edit_ComfyUI",
+      "filename": "split_files/diffusion_models/qwen_image_edit_2509_fp8_e4m3fn.safetensors",
+      "destination": "diffusion_models/qwen_image_edit_2509_fp8_e4m3fn.safetensors"
+    },
+    {
+      "id": "qwen-image-edit-lightning",
+      "repository": "lightx2v/Qwen-Image-Lightning",
+      "filename": "Qwen-Image-Edit-2509/Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors",
+      "destination": "loras/Qwen-Image-Edit-2509-Lightning-4steps-V1.0-bf16.safetensors"
+    },
+    {
+      "id": "qwen-clothes-try-on",
+      "repository": "Naqib/qwen-clothes-tryon-lora",
+      "filename": "clothes_tryon_qwen-edit-lora.safetensors",
+      "destination": "loras/clothes_tryon_qwen-edit-lora.safetensors"
+    },
+    {
+      "id": "sam3-multiplex",
+      "repository": "Comfy-Org/sam3.1",
+      "filename": "checkpoints/sam3.1_multiplex_fp16.safetensors",
+      "destination": "checkpoints/sam3.1_multiplex_fp16.safetensors"
+    },
+    {
+      "id": "clip-vision-h",
+      "repository": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+      "filename": "split_files/clip_vision/clip_vision_h.safetensors",
+      "destination": "clip_vision/clip_vision_h.safetensors"
+    },
+    {
+      "id": "umt5-xxl-fp8",
+      "repository": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+      "filename": "split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "destination": "text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors"
+    },
+    {
+      "id": "wan-2.1-vae",
+      "repository": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+      "filename": "split_files/vae/wan_2.1_vae.safetensors",
+      "destination": "vae/wan_2.1_vae.safetensors"
+    },
+    {
+      "id": "wan-animate-14b-fp8",
+      "repository": "Kijai/WanVideo_comfy_fp8_scaled",
+      "filename": "Wan22Animate/Wan2_2-Animate-14B_fp8_e4m3fn_scaled_KJ.safetensors",
+      "destination": "diffusion_models/Wan2_2-Animate-14B_fp8_e4m3fn_scaled_KJ.safetensors"
+    },
+    {
+      "id": "wan-animate-relight-lora",
+      "repository": "Kijai/WanVideo_comfy",
+      "filename": "LoRAs/Wan22_relight/WanAnimate_relight_lora_fp16.safetensors",
+      "destination": "loras/WanAnimate_relight_lora_fp16.safetensors"
+    },
+    {
+      "id": "lightx2v-wan-i2v-lora",
+      "repository": "Kijai/WanVideo_comfy",
+      "filename": "Lightx2v/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+      "destination": "loras/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors"
+    },
+    {
+      "id": "vitpose-wholebody-onnx",
+      "repository": "Kijai/vitpose_comfy",
+      "filename": "onnx/vitpose_h_wholebody_model.onnx",
+      "destination": "WAPdetection/vitpose_h_wholebody_model.onnx"
+    },
+    {
+      "id": "vitpose-wholebody-data",
+      "repository": "Kijai/vitpose_comfy",
+      "filename": "onnx/vitpose_h_wholebody_data.bin",
+      "destination": "WAPdetection/vitpose_h_wholebody_data.bin"
+    },
+    {
+      "id": "yolov10m",
+      "repository": "Wan-AI/Wan2.2-Animate-14B",
+      "filename": "process_checkpoint/det/yolov10m.onnx",
+      "destination": "WAPdetection/yolov10m.onnx"
+    },
+    {
+      "id": "seedvr2-3b-fp8",
+      "repository": "numz/SeedVR2_comfyUI",
+      "filename": "seedvr2_ema_3b_fp8_e4m3fn.safetensors",
+      "destination": "SEEDVR2/seedvr2_ema_3b_fp8_e4m3fn.safetensors"
+    },
+    {
+      "id": "seedvr2-vae-fp16",
+      "repository": "numz/SeedVR2_comfyUI",
+      "filename": "ema_vae_fp16.safetensors",
+      "destination": "SEEDVR2/ema_vae_fp16.safetensors"
+    },
+    {
+      "id": "seedvc-small",
+      "repository": "Plachta/Seed-VC",
+      "filename": "DiT_seed_v2_uvit_whisper_small_wavenet_bigvgan_pruned.pth",
+      "destination": "TTS/Seed-VC/DiT_seed_v2_uvit_whisper_small_wavenet_bigvgan_pruned.pth"
+    },
+    {
+      "id": "seedvc-f0-44k",
+      "repository": "Plachta/Seed-VC",
+      "filename": "DiT_seed_v2_uvit_whisper_base_f0_44k_bigvgan_pruned_ft_ema.pth",
+      "destination": "TTS/Seed-VC/DiT_seed_v2_uvit_whisper_base_f0_44k_bigvgan_pruned_ft_ema.pth"
+    },
+    {
+      "id": "seedvc-campplus",
+      "repository": "funasr/campplus",
+      "filename": "campplus_cn_common.bin",
+      "destination": "TTS/Seed-VC/campplus_cn_common.bin"
+    },
+    {
+      "id": "seedvc-rmvpe",
+      "repository": "lj1995/VoiceConversionWebUI",
+      "filename": "rmvpe.pt",
+      "destination": "TTS/Seed-VC/rmvpe.pt"
+    },
+    {
+      "id": "hunyuan3d-dit-v2-1-fp16",
+      "repository": "tencent/Hunyuan3D-2.1",
+      "revision": "0b94677654c57bb9a6b6845cd7b704ccf551d327",
+      "filename": "hunyuan3d-dit-v2-1/model.fp16.ckpt",
+      "destination": "diffusion_models/hunyuan3D-dit-v2-1-fp16.ckpt"
+    },
+    {
+      "id": "hunyuan3d-vae-v2-1-fp16",
+      "repository": "tencent/Hunyuan3D-2.1",
+      "revision": "0b94677654c57bb9a6b6845cd7b704ccf551d327",
+      "filename": "hunyuan3d-vae-v2-1/model.fp16.ckpt",
+      "destination": "vae/Hunyuan3D-vae-v2-1-fp16.ckpt"
+    }
+  ],
+  "snapshots": [
+    {
+      "id": "hunyuan3d-paint-pbr",
+      "repository": "tencent/Hunyuan3D-2.1",
+      "revision": "0b94677654c57bb9a6b6845cd7b704ccf551d327",
+      "destination": "hunyuan3d-paint",
+      "allow_patterns": ["hunyuan3d-paintpbr-v2-1/*"]
+    },
+    {
+      "id": "dinov2-giant",
+      "repository": "facebook/dinov2-giant",
+      "revision": "611a9d42f2335e0f921f1e313ad3c1b7178d206d",
+      "destination": "dinov2-giant",
+      "allow_patterns": [
+        "config.json",
+        "preprocessor_config.json",
+        "model*.safetensors",
+        "model*.safetensors.index.json",
+        "pytorch_model*.bin",
+        "pytorch_model*.bin.index.json"
+      ]
+    },
+    {
+      "id": "whisper-small",
+      "repository": "openai/whisper-small",
+      "destination": "TTS/whisper-small",
+      "allow_patterns": [
+        "*.json",
+        "*.txt",
+        "*.safetensors"
+      ]
+    },
+    {
+      "id": "bigvgan-22khz",
+      "repository": "nvidia/bigvgan_v2_22khz_80band_256x",
+      "destination": "TTS/bigvgan_v2_22khz_80band_256x",
+      "allow_patterns": [
+        "bigvgan_generator.pt",
+        "config.json"
+      ]
+    },
+    {
+      "id": "bigvgan-44khz",
+      "repository": "nvidia/bigvgan_v2_44khz_128band_512x",
+      "destination": "TTS/bigvgan_v2_44khz_128band_512x",
+      "allow_patterns": [
+        "bigvgan_generator.pt",
+        "config.json"
+      ]
+    }
+  ],
+  "workflows": {
+    "lite-upscale": ["ultrasharp-4x"],
+    "text-to-image": ["z-image-turbo-bf16", "z-image-qwen3-4b", "z-image-vae"],
+    "image-edit": ["qwen-image-vae", "qwen-vl-7b-fp8", "qwen-image-edit-2509-fp8", "qwen-image-edit-lightning"],
+    "try-on": ["qwen-image-vae", "qwen-vl-7b-fp8", "qwen-image-edit-2509-fp8", "qwen-image-edit-lightning", "qwen-clothes-try-on"],
+    "character-swap": ["sam3-multiplex", "clip-vision-h", "umt5-xxl-fp8", "wan-2.1-vae", "wan-animate-14b-fp8", "wan-animate-relight-lora", "lightx2v-wan-i2v-lora", "vitpose-wholebody-onnx", "vitpose-wholebody-data", "yolov10m", "seedvr2-3b-fp8", "seedvr2-vae-fp16", "seedvc-small", "seedvc-f0-44k", "seedvc-campplus", "seedvc-rmvpe", "whisper-small", "bigvgan-22khz", "bigvgan-44khz"],
+    "image-to-3d": ["hunyuan3d-dit-v2-1-fp16", "hunyuan3d-vae-v2-1-fp16", "hunyuan3d-paint-pbr", "dinov2-giant"],
+    "voxelize": []
+  }
+}

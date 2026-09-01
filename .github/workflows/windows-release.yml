@@ -1,0 +1,75 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.2
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install web dependencies
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Generate workflow policy
+        run: python scripts/build-allowed-nodes.py
+
+      - name: Verify generated workflow policy
+        run: git diff --exit-code -- assets/allowed-node-classes.json
+
+      - name: Run structural tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Lint web application
+        run: pnpm --dir web lint
+
+      - name: Build setup sidecars
+        shell: pwsh
+        run: ./scripts/build-windows-sidecar.ps1
+
+      - name: Build Windows installer
+        run: pnpm --dir web package:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: goose-studio-windows-x64
+          path: |
+            web/release/*.exe
+            web/release/*.blockmap
+          if-no-files-found: error
+
+      - name: Publish tagged installer
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $installer = (Get-ChildItem "web/release/*.exe" | Select-Object -First 1).FullName
+          gh release view $env:GITHUB_REF_NAME *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $env:GITHUB_REF_NAME --generate-notes --title "Goose Studio $env:GITHUB_REF_NAME"
+          }
+          gh release upload $env:GITHUB_REF_NAME $installer --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
