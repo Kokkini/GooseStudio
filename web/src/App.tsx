@@ -1,4 +1,5 @@
 import { ArrowRight, Box, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock3, CloudCog, Download, ExternalLink, FlaskConical, Image, LoaderCircle, RefreshCw, Shirt, Sparkles, Trash2, Video, WandSparkles, X } from 'lucide-react'
+import gooseStudioLogo from './assets/logo-abstract-orbit.svg'
 import { useEffect, useRef, useState } from 'react'
 import { cancelJob, checkConnection, deleteJob, downloadOutput, getJob, getWorkflowCapabilities, installWorkflow, submitJob, submitVoxelizationJob, uploadInputs } from './api.ts'
 import FileDrop from './components/FileDrop.tsx'
@@ -249,7 +250,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand"><span className="brand-mark"><Sparkles size={18} /></span><div><strong>Goose Studio</strong><small>Powered by your Modal credits</small></div></div>
+        <div className="brand"><span className="brand-mark"><img src={gooseStudioLogo} alt="" /></span><div><strong>Goose Studio</strong><small>Powered by your Modal credits</small></div></div>
         <div className="connection-state"><span className={connected ? 'online' : ''} />{connected ? 'Modal connected' : 'Setup required'}{!connected && <button className="setup-modal-button" onClick={() => setSetupOpen(true)}><CloudCog size={16} /> Setup Modal</button>}<SettingsMenu open={settingsOpen} usageUrl={modalUsageUrl(config)} onToggle={() => setSettingsOpen((current) => !current)} onClose={() => setSettingsOpen(false)} onViewLog={() => setLogOpen(true)} onConnectAccount={connectNewAccount} /></div>
       </header>
 

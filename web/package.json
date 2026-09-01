@@ -1,7 +1,7 @@
 {
   "name": "goose-studio-web",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.1.1",
   "type": "module",
   "main": "./out/main/main.js",
   "scripts": {
@@ -53,9 +53,11 @@
       }
     ],
     "directories": {
+      "buildResources": "src/assets",
       "output": "release"
     },
     "win": {
+      "icon": "logo-abstract-orbit.ico",
       "target": [
         {
           "target": "nsis",

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Goose Studio abstract orbit logo</title>
+  <desc id="desc">Two interlocking abstract orbit shapes in orange and black on a white rounded square.</desc>
+  <rect x="24" y="24" width="976" height="976" rx="176" fill="#ffffff" />
+  <path d="M512 244c-137 0-248 120-248 268s111 268 248 268 248-120 248-268-111-268-248-268Z" fill="none" stroke="#171a14" stroke-width="92" stroke-linecap="round" />
+  <path d="M512 244c-137 0-248 120-248 268s111 268 248 268" fill="none" stroke="#fa7b47" stroke-width="92" stroke-linecap="round" />
+  <path d="M512 244c137 0 248 120 248 268S649 780 512 780" fill="none" stroke="#171a14" stroke-width="92" stroke-linecap="round" />
+</svg>
