@@ -1,4 +1,16 @@
-# Goose Studio
+<p align="center">
+  <img src="web/src/assets/logo-abstract-orbit.svg" alt="Goose Studio logo" width="160">
+</p>
+
+<h1 align="center">Goose Studio</h1>
+
+<p align="center">Create images, videos, 3D models, and voxel models using your own Modal account and credits.</p>
+
+<p align="center">
+  <a href="https://github.com/Kokkini/GooseStudio/releases/download/v1.1.6/Goose-Studio-Setup-1.1.6.exe"><strong>Download for Windows</strong></a>
+  ·
+  <a href="https://github.com/Kokkini/GooseStudio/releases">All releases</a>
+</p>
 
 Goose Studio helps you create images, videos, 3D models, and voxel models using your own Modal account and credits.
 
@@ -24,7 +36,7 @@ The Windows app includes everything it needs. You do not need to install Python,
 
 ## Get started
 
-1. Download the latest Windows installer from the project's Releases page.
+1. [Download the latest Windows installer (v1.1.6)](https://github.com/Kokkini/GooseStudio/releases/download/v1.1.6/Goose-Studio-Setup-1.1.6.exe).
 2. Install and open Goose Studio.
 3. Select **Setup Modal** and follow the instructions in the app.
 4. When asked, paste the complete token command copied from Modal. Never share that command with anyone.
@@ -52,4 +64,4 @@ If something goes wrong, open the technical details in the app's error or setup 
 
 ## Updates
 
-Download newer versions from the project's Releases page and install them over the existing version. Your Modal connection and app settings remain on your computer.
+Download newer versions from the [Releases page](https://github.com/Kokkini/GooseStudio/releases) and install them over the existing version. Your Modal connection and app settings remain on your computer.
