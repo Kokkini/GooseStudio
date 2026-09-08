@@ -9,6 +9,7 @@ const urls: Record<ComfyWorkflowKind, URL> = {
   'try-on': new URL('../workflows/qwen-virtual-try-on.json', import.meta.url),
   'character-swap': new URL('../workflows/wan-character-swap.json', import.meta.url),
   'image-to-3d': new URL('../workflows/image-to-3d.json', import.meta.url),
+  'image-to-3d-v2': new URL('../workflows/image-to-3d-v2.json', import.meta.url),
 }
 
 const maxSeed = 9_007_199_254_740_991
@@ -78,6 +79,16 @@ export async function imageTo3d(name: string, jobId: string) {
   const workflow = await template('image-to-3d')
   workflow['14'].inputs.image = name
   workflow['57'].inputs.filename_prefix = `mesh/${jobId}/hy_mesh`
+  return [workflow]
+}
+
+export type ImageTo3dV2Model = 'trellis2' | 'pixal3d'
+
+export async function imageTo3dV2(name: string, jobId: string, model: ImageTo3dV2Model = 'trellis2') {
+  const workflow = await template('image-to-3d-v2')
+  workflow['122'].inputs.image = name
+  workflow['316'].inputs.value = model === 'trellis2'
+  workflow['322'].inputs.filename_prefix = `mesh/${jobId}/${model === 'trellis2' ? 'trellis2' : 'pixal3d'}`
   return [workflow]
 }
 
@@ -171,5 +182,6 @@ export const outputNodes: Record<WorkflowKind, string[]> = {
   'try-on': ['472'],
   'character-swap': ['368'],
   'image-to-3d': ['57'],
+  'image-to-3d-v2': ['322'],
   voxelize: [],
 }

@@ -47,7 +47,8 @@ RUN cd /src/ComfyUI-Hunyuan3d-2-1/hy3dpaint/custom_rasterizer \
 
 FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04@sha256:ac55d124da4882b497f732d8dfd9a702d5447a5f29d08d56da6f64f0a1eb34bc
 
-ARG RUNTIME_VERSION=1.2.0
+ARG RUNTIME_VERSION=1.3.0
+ARG COMFYUI_REF=ace9172e95038ac25015c419713aa7755f739034
 LABEL org.opencontainers.image.title="Goose Studio ComfyUI Runtime"
 LABEL org.opencontainers.image.version="${RUNTIME_VERSION}"
 LABEL org.opencontainers.image.source="https://github.com/kokkini/goose-studio"
@@ -83,7 +84,9 @@ RUN apt-get update \
 COPY --from=uv /uv /uvx /usr/local/bin/
 
 RUN uv venv --python /usr/bin/python3.12 /opt/venv \
-    && git clone --branch v0.22.3 --depth 1 https://github.com/Comfy-Org/ComfyUI.git /comfyui
+    && git init /comfyui \
+    && git -C /comfyui fetch --depth 1 https://github.com/Comfy-Org/ComfyUI.git "${COMFYUI_REF}" \
+    && git -C /comfyui checkout --detach FETCH_HEAD
 
 COPY requirements-runtime.txt /tmp/requirements-runtime.txt
 

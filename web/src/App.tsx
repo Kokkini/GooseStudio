@@ -10,7 +10,7 @@ import WorkflowInstallDialog from './components/WorkflowInstallDialog.tsx'
 import { appendAppLog, getRuntimeConfig } from './desktop.ts'
 import { estimateWorkflow, formatCreditEstimate, type WorkflowEstimate } from './estimates.ts'
 import type { Job, JobState, OutputFile, RuntimeConfig, VoxelizationOptions, WorkflowInstallStatus, WorkflowKind } from './types.ts'
-import { characterSwap, imageEdit, imageTo3d, liteUpscale, outputNodes, textToImage, tryOn } from './workflows.ts'
+import { characterSwap, imageEdit, imageTo3d, imageTo3dV2, liteUpscale, outputNodes, textToImage, tryOn } from './workflows.ts'
 
 const workflows = [
   { id: 'text-to-image' as const, name: 'Text to Image', summary: 'Create an image from a prompt', icon: Image, color: 'amber' },
@@ -18,6 +18,7 @@ const workflows = [
   { id: 'try-on' as const, name: 'Virtual Try-On', summary: 'Put product clothing on any person', icon: Shirt, color: 'rose' },
   { id: 'character-swap' as const, name: 'Character Swap', summary: 'Replace a person across a full video', icon: Video, color: 'cyan' },
   { id: 'image-to-3d' as const, name: 'Image to 3D', summary: 'Turn an image into a textured 3D model', icon: Box, color: 'cyan' },
+  { id: 'image-to-3d-v2' as const, name: 'Image to 3D v2', summary: 'Create a detailed 3D model from an image', icon: Box, color: 'cyan' },
   { id: 'voxelize' as const, name: 'Voxelize 3D model', summary: 'Turn a GLB model into a .vox file', icon: Box, color: 'cyan' },
   { id: 'lite-upscale' as const, name: 'Image Upscale', summary: 'Upscale one image to four times its size', icon: FlaskConical, color: 'lime' },
 ]
@@ -61,6 +62,7 @@ export default function App() {
   const [initializing, setInitializing] = useState(true)
   const [setupOpen, setSetupOpen] = useState(false)
   const [setupInstance, setSetupInstance] = useState(0)
+  const [setupMode, setSetupMode] = useState<'setup' | 'update' | 'switch'>('setup')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [logOpen, setLogOpen] = useState(false)
   const [installed, setInstalled] = useState<WorkflowKind[]>([])
@@ -75,7 +77,7 @@ export default function App() {
     appendAppLog('Checking Modal connection')
     try {
       const next = await getRuntimeConfig()
-      if (!next.baseUrl || !next.apiKey) { setSetupOpen(true); return false }
+      if (!next.baseUrl || !next.apiKey) { setSetupMode('setup'); setSetupOpen(true); return false }
       await checkConnection(next)
       const capabilities = await getWorkflowCapabilities(next)
       setConfig(next)
@@ -86,7 +88,7 @@ export default function App() {
       return true
     } catch (error) {
       appendAppLog(`Modal connection unavailable: ${(error as Error).message}`)
-      setSetupOpen(true); setConnected(false); return false
+      setSetupMode('setup'); setSetupOpen(true); setConnected(false); return false
     }
   }
 
@@ -237,8 +239,16 @@ export default function App() {
     updateCurrentWorkflowRun(kind, active.job.job_id, { job: { ...active.job, status: 'failed' }, state: 'failed', message: 'Job cancelled' })
   }
 
-  const connectNewAccount = () => {
+  const updateCloudApp = () => {
     setSettingsOpen(false)
+    setSetupMode('update')
+    setSetupInstance((current) => current + 1)
+    setSetupOpen(true)
+  }
+
+  const switchModalAccount = () => {
+    setSettingsOpen(false)
+    setSetupMode('switch')
     setSetupInstance((current) => current + 1)
     setSetupOpen(true)
   }
@@ -251,7 +261,7 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand"><span className="brand-mark"><img src={gooseStudioLogo} alt="" /></span><div><strong>Goose Studio</strong><small>Powered by your Modal credits</small></div></div>
-        <div className="connection-state"><span className={connected ? 'online' : ''} />{connected ? 'Modal connected' : 'Setup required'}{!connected && <button className="setup-modal-button" onClick={() => setSetupOpen(true)}><CloudCog size={16} /> Setup Modal</button>}<SettingsMenu open={settingsOpen} usageUrl={modalUsageUrl(config)} onToggle={() => setSettingsOpen((current) => !current)} onClose={() => setSettingsOpen(false)} onViewLog={() => setLogOpen(true)} onConnectAccount={connectNewAccount} /></div>
+        <div className="connection-state"><span className={connected ? 'online' : ''} />{connected ? 'Modal connected' : 'Setup required'}{!connected && <button className="setup-modal-button" onClick={() => { setSetupMode('setup'); setSetupOpen(true) }}><CloudCog size={16} /> Setup Modal</button>}<SettingsMenu open={settingsOpen} usageUrl={modalUsageUrl(config)} onToggle={() => setSettingsOpen((current) => !current)} onClose={() => setSettingsOpen(false)} onViewLog={() => setLogOpen(true)} onUpdateApp={updateCloudApp} onSwitchAccount={switchModalAccount} /></div>
       </header>
 
       <main>
@@ -275,6 +285,7 @@ export default function App() {
               {kind === 'try-on' && <TryOnForm run={run} installed={installed.includes(kind)} install={() => startInstall(kind)} />}
               {kind === 'character-swap' && <CharacterSwapForm run={run} installed={installed.includes(kind)} install={() => startInstall(kind)} />}
               {kind === 'image-to-3d' && <ImageTo3DForm run={run} installed={workflowReady(kind, installed)} install={() => startInstall(kind)} />}
+              {kind === 'image-to-3d-v2' && <ImageTo3DForm workflow="image-to-3d-v2" run={run} installed={workflowReady(kind, installed)} install={() => startInstall(kind)} />}
               {kind === 'voxelize' && <VoxelizeForm run={runVoxelize} />}
             </div>
             <ResultPanel state={selectedRun.state} message={selectedRun.message} job={selectedRun.job} config={config} onCancel={cancel} onRetry={selectedRun.retry} />
@@ -284,7 +295,7 @@ export default function App() {
         <section className="history-section"><div className="section-title"><div><p className="eyebrow">Recent work</p><h2>Your creations</h2></div><Clock3 /></div>{history.length ? <><div className="history-grid">{visibleHistory.map((item) => <HistoryCard key={item.job_id} item={item} config={config} onOpen={() => { const workflow = item.workflow || 'text-to-image'; setKind(workflow); updateWorkflowRun(workflow, { job: item, state: 'completed', message: 'Loaded from history', retry: null }) }} onDelete={() => { void removeCreation(item) }} />)}</div>{historyPageCount > 1 && <nav className="history-pagination" aria-label="Your creations pages"><button type="button" onClick={() => setHistoryPage((current) => Math.max(0, current - 1))} disabled={historyPage === 0} aria-label="Previous creations page"><ChevronLeft size={16} /></button><span>Page {historyPage + 1} of {historyPageCount}</span><button type="button" onClick={() => setHistoryPage((current) => Math.min(historyPageCount - 1, current + 1))} disabled={historyPage === historyPageCount - 1} aria-label="Next creations page"><ChevronRight size={16} /></button></nav>}</> : <div className="empty-history"><Image /><span>Your finished images, videos, and 3D models will appear here.</span></div>}</section>
       </main>
       <footer><span>Goose Studio</span><span>Files stay in your Modal account</span></footer>
-      <SetupDialog key={setupInstance} open={setupOpen} fullScreen mandatory={!connected} onClose={() => setSetupOpen(false)} onComplete={loadConfig} />
+      <SetupDialog key={setupInstance} open={setupOpen} fullScreen mandatory={!connected} mode={setupMode} onClose={() => setSetupOpen(false)} onComplete={loadConfig} />
       <AppLogDialog open={logOpen} onClose={() => setLogOpen(false)} />
       <WorkflowInstallDialog workflow={installing} status={installStatus} onClose={() => { setInstalling(null); setInstallStatus({ state: 'idle' }) }} />
     </div>
@@ -323,13 +334,14 @@ function LiteForm({ run, installed, install }: InstallableFormProps) {
   return <div className="workflow-form"><div className="lite-callout"><FlaskConical /><div><strong>Fast image upscaling</strong><small>Uses one small model in your Modal account.</small></div></div><FileDrop label="Image to upscale" hint="Any JPG, PNG, or WebP image" accept="image/*" file={file} onChange={setFile} /><WorkflowButton installed={installed} disabled={!file} install={install} generate={submit} estimate={estimate}><Sparkles /> Upscale image 4×</WorkflowButton></div>
 }
 
-function ImageTo3DForm({ run, installed, install }: InstallableFormProps) {
+function ImageTo3DForm({ workflow = 'image-to-3d', run, installed, install }: InstallableFormProps & { workflow?: 'image-to-3d' | 'image-to-3d-v2' }) {
   const [file, setFile] = useState<File | null>(null)
+  const [model, setModel] = useState<'trellis2' | 'pixal3d'>('trellis2')
   const [voxelize, setVoxelize] = useState(false)
   const [resolution, setResolution] = useState(128)
-  const submit = () => { if (!file) return; run('image-to-3d', [file], (names, id) => imageTo3d(names[0], id) as never, submit, voxelize ? { postprocess: { type: 'voxelize', resolution } } : undefined) }
-  const estimate = file ? estimateWorkflow('image-to-3d', { voxelize, voxelResolution: resolution }) : null
-  return <div className="workflow-form"><div className="lite-callout"><Box /><div><strong>Textured 3D model</strong><small>Upload one clear image and Goose Studio will create a downloadable 3D model.</small></div></div><FileDrop label="Image to turn into 3D" hint="A clear product image works best" accept="image/*" file={file} onChange={setFile} /><Toggle label="Also create a voxel model" checked={voxelize} setChecked={setVoxelize} />{voxelize && <VoxelResolution value={resolution} setValue={setResolution} />}<WorkflowButton installed={installed} disabled={!file} install={install} generate={submit} estimate={estimate}><Box /> Create 3D model</WorkflowButton></div>
+  const submit = () => { if (!file) return; run(workflow, [file], (names, id) => (workflow === 'image-to-3d-v2' ? imageTo3dV2(names[0], id, model) : imageTo3d(names[0], id)) as never, submit, voxelize ? { postprocess: { type: 'voxelize', resolution } } : undefined) }
+  const estimate = file ? estimateWorkflow(workflow, { voxelize, voxelResolution: resolution }) : null
+  return <div className="workflow-form"><div className="lite-callout"><Box /><div><strong>{workflow === 'image-to-3d-v2' ? 'Detailed 3D model' : 'Textured 3D model'}</strong><small>Upload one clear image and Goose Studio will create a downloadable 3D model.</small></div></div><FileDrop label="Image to turn into 3D" hint="A clear product image works best" accept="image/*" file={file} onChange={setFile} />{workflow === 'image-to-3d-v2' && <ModelSwitch model={model} setModel={setModel} />}<Toggle label="Also create a voxel model" checked={voxelize} setChecked={setVoxelize} />{voxelize && <VoxelResolution value={resolution} setValue={setResolution} />}<WorkflowButton installed={installed} disabled={!file} install={install} generate={submit} estimate={estimate}><Box /> Create 3D model</WorkflowButton></div>
 }
 
 function VoxelizeForm({ run }: { run: VoxelizeRun }) {
@@ -411,6 +423,8 @@ function useVideoDuration(file: File | null) {
 }
 
 function ModeSwitch({ mode, setMode }: { mode: 'speed' | 'quality'; setMode: (mode: 'speed' | 'quality') => void }) { return <div className="mode-switch"><button className={mode === 'speed' ? 'active' : ''} onClick={() => setMode('speed')}><Sparkles size={15} /> Speed</button><button className={mode === 'quality' ? 'active' : ''} onClick={() => setMode('quality')}><WandSparkles size={15} /> Quality</button></div> }
+
+function ModelSwitch({ model, setModel }: { model: 'trellis2' | 'pixal3d'; setModel: (model: 'trellis2' | 'pixal3d') => void }) { return <div className="model-choice"><label>3D model</label><div className="mode-switch model-switch"><button className={model === 'trellis2' ? 'active' : ''} onClick={() => setModel('trellis2')}>Trellis 2</button><button className={model === 'pixal3d' ? 'active' : ''} onClick={() => setModel('pixal3d')}>Pixal3D</button></div></div> }
 function Toggle({ label, checked, setChecked }: { label: string; checked: boolean; setChecked: (value: boolean) => void }) { return <label className="toggle"><button className={checked ? 'on' : ''} onClick={() => setChecked(!checked)}><span /></button>{label}</label> }
 
 function useOutputSource(config: RuntimeConfig, jobId: string, outputId: string) {

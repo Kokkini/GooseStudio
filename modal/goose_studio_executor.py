@@ -25,7 +25,7 @@ IO_VOLUME_NAME = f"{APP_NAME}-io"
 SECRET_NAME = f"{APP_NAME}-api-key"
 RUNTIME_IMAGE = os.getenv(
     "GOOSE_STUDIO_IMAGE",
-    "ghcr.io/kokkini/goose-studio-runtime@sha256:ae9b39249e6fc8db305cfeb13c8013552c58481a35f4584c6b24d95c15f2d085",
+    "ghcr.io/kokkini/goose-studio-runtime@sha256:6b83aae6502341617bf6ae68804f56f5f308cfcc0712e1ee46cbbda9d7caeacb",
 )
 IMAGE_GPU_TYPE = os.getenv("GOOSE_STUDIO_IMAGE_GPU", "L40S")
 VIDEO_GPU_TYPE = os.getenv("GOOSE_STUDIO_VIDEO_GPU", "H100")
@@ -396,33 +396,49 @@ def _collect_outputs(
     seen = set()
     index = start_index
 
+    def collect_file(node_id: str, relative: Path, filename: str) -> None:
+        nonlocal index
+        path = (output_root / relative).resolve()
+        if (
+            path in seen
+            or not path.is_relative_to(output_root)
+            or job_id not in relative.parts
+            or not path.is_file()
+        ):
+            return
+        seen.add(path)
+        collected.append(
+            {
+                "id": str(index),
+                "node_id": node_id,
+                "filename": filename,
+                "relative_path": str(relative),
+                "content_type": _content_type(path),
+            }
+        )
+        index += 1
+
     for node_id, node_output in result.get("outputs", {}).items():
         if output_node_ids and node_id not in output_node_ids:
             continue
-        for category in ("images", "gifs", "audio", "meshes"):
+        if not isinstance(node_output, dict):
+            continue
+        for category in ("images", "gifs", "audio", "meshes", "3d"):
             for item in node_output.get(category, []):
                 if not isinstance(item, dict) or not item.get("filename"):
                     continue
                 relative = Path(item.get("subfolder", "")) / item["filename"]
-                path = (output_root / relative).resolve()
-                if (
-                    path in seen
-                    or not path.is_relative_to(output_root)
-                    or job_id not in relative.parts
-                    or not path.is_file()
-                ):
-                    continue
-                seen.add(path)
-                collected.append(
-                    {
-                        "id": str(index),
-                        "node_id": node_id,
-                        "filename": item["filename"],
-                        "relative_path": str(relative),
-                        "content_type": _content_type(path),
-                    }
-                )
-                index += 1
+                collect_file(node_id, relative, item["filename"])
+
+        # ComfyUI's native Save3DAdvanced node serializes its saved model as
+        # {"result": ["relative/path/model.glb", ...]} instead of using the
+        # image/video-style filename records above.
+        model_result = node_output.get("result")
+        if isinstance(model_result, (list, tuple)) and model_result:
+            model_file = model_result[0]
+            if isinstance(model_file, str) and model_file:
+                relative = Path(model_file)
+                collect_file(node_id, relative, relative.name)
     return collected
 
 

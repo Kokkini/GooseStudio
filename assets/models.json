@@ -164,6 +164,48 @@
       "revision": "0b94677654c57bb9a6b6845cd7b704ccf551d327",
       "filename": "hunyuan3d-vae-v2-1/model.fp16.ckpt",
       "destination": "vae/Hunyuan3D-vae-v2-1-fp16.ckpt"
+    },
+    {
+      "id": "trellis2-int8-convrot",
+      "repository": "Comfy-Org/TRELLIS.2",
+      "filename": "diffusion_models/trellis_2_int8_convrot.safetensors",
+      "destination": "diffusion_models/trellis_2_int8_convrot.safetensors"
+    },
+    {
+      "id": "trellis2-shape-vae-bf16",
+      "repository": "Comfy-Org/Pixal3D",
+      "filename": "vae/trellis_2_shape_vae_bf16.safetensors",
+      "destination": "vae/trellis_2_shape_vae_bf16.safetensors"
+    },
+    {
+      "id": "trellis2-texture-vae-bf16",
+      "repository": "Comfy-Org/Pixal3D",
+      "filename": "vae/trellis_2_texture_vae_bf16.safetensors",
+      "destination": "vae/trellis_2_texture_vae_bf16.safetensors"
+    },
+    {
+      "id": "trellis2-dinov3-l",
+      "repository": "Comfy-Org/Pixal3D",
+      "filename": "clip_vision/dino_v3_L_naf_fp32.safetensors",
+      "destination": "clip_vision/dino_v3_L_naf_fp32.safetensors"
+    },
+    {
+      "id": "trellis2-birefnet",
+      "repository": "Comfy-Org/BiRefNet",
+      "filename": "background_removal/birefnet.safetensors",
+      "destination": "background_removal/birefnet.safetensors"
+    },
+    {
+      "id": "trellis2-pixal3d-int8-convrot",
+      "repository": "Comfy-Org/Pixal3D",
+      "filename": "diffusion_models/pixal3d_int8_convrot.safetensors",
+      "destination": "diffusion_models/pixal3d_int8_convrot.safetensors"
+    },
+    {
+      "id": "trellis2-moge-vitl-normal",
+      "repository": "Comfy-Org/MoGe",
+      "filename": "geometry_estimation/moge_2_vitl_normal_fp16.safetensors",
+      "destination": "geometry_estimation/moge_2_vitl_normal_fp16.safetensors"
     }
   ],
   "snapshots": [
@@ -224,6 +266,7 @@
     "try-on": ["qwen-image-vae", "qwen-vl-7b-fp8", "qwen-image-edit-2509-fp8", "qwen-image-edit-lightning", "qwen-clothes-try-on"],
     "character-swap": ["sam3-multiplex", "clip-vision-h", "umt5-xxl-fp8", "wan-2.1-vae", "wan-animate-14b-fp8", "wan-animate-relight-lora", "lightx2v-wan-i2v-lora", "vitpose-wholebody-onnx", "vitpose-wholebody-data", "yolov10m", "seedvr2-3b-fp8", "seedvr2-vae-fp16", "seedvc-small", "seedvc-f0-44k", "seedvc-campplus", "seedvc-rmvpe", "whisper-small", "bigvgan-22khz", "bigvgan-44khz"],
     "image-to-3d": ["hunyuan3d-dit-v2-1-fp16", "hunyuan3d-vae-v2-1-fp16", "hunyuan3d-paint-pbr", "dinov2-giant"],
+    "image-to-3d-v2": ["trellis2-int8-convrot", "trellis2-shape-vae-bf16", "trellis2-texture-vae-bf16", "trellis2-dinov3-l", "trellis2-birefnet", "trellis2-pixal3d-int8-convrot", "trellis2-moge-vitl-normal"],
     "voxelize": []
   }
 }

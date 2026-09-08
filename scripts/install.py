@@ -12,11 +12,16 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MODAL_CLI = Path(os.environ["GOOSE_STUDIO_MODAL_CLI"]) if os.getenv("GOOSE_STUDIO_MODAL_CLI") else None
+
+
+class InvalidApplicationApiKeyError(RuntimeError):
+    """The deployed endpoint rejected the key that setup is about to save."""
 
 for stream in (sys.stdout, sys.stderr):
     if stream is not None and hasattr(stream, "reconfigure"):
@@ -46,6 +51,84 @@ def run(*args: str, capture: bool = False) -> str:
 def run_modal(*args: str, capture: bool = False) -> str:
     command = str(MODAL_CLI) if MODAL_CLI else "modal"
     return run(command, *args, capture=capture)
+
+
+def run_streaming(command: list[str], heartbeat_label: str) -> str:
+    environment = os.environ.copy()
+    environment.setdefault("PYTHONUTF8", "1")
+    environment.setdefault("PYTHONIOENCODING", "utf-8")
+    process = subprocess.Popen(
+        command,
+        cwd=ROOT,
+        env=environment,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+    )
+    assert process.stdout is not None
+    output_queue: queue.Queue[str | None] = queue.Queue()
+
+    def read_output() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            output_queue.put(line)
+        output_queue.put(None)
+
+    reader = threading.Thread(target=read_output, daemon=True)
+    reader.start()
+    captured: list[str] = []
+    reader_finished = False
+    started = time.monotonic()
+    next_heartbeat = started + 15
+
+    while not reader_finished or process.poll() is None:
+        while True:
+            try:
+                line = output_queue.get_nowait()
+            except queue.Empty:
+                break
+            if line is None:
+                reader_finished = True
+                break
+            captured.append(line)
+            for output_line in re.split(r"[\r\n]+", line):
+                if output_line.strip():
+                    print(_redact(output_line), flush=True)
+
+        now = time.monotonic()
+        if now >= next_heartbeat:
+            elapsed = int(now - started)
+            duration = f"{elapsed // 60}m elapsed" if elapsed >= 60 else "less than a minute elapsed"
+            print(f"[setup] {heartbeat_label} still running ({duration}; logs appear below)", flush=True)
+            next_heartbeat = now + 15
+        if not reader_finished or process.poll() is None:
+            time.sleep(0.25)
+
+    reader.join(timeout=1)
+    returncode = process.wait()
+    while True:
+        try:
+            line = output_queue.get_nowait()
+        except queue.Empty:
+            break
+        if line is None:
+            continue
+        captured.append(line)
+        for output_line in re.split(r"[\r\n]+", line):
+            if output_line.strip():
+                print(_redact(output_line), flush=True)
+    output = "".join(captured)
+    if returncode:
+        raise subprocess.CalledProcessError(returncode, command, output=output)
+    return output.strip()
+
+
+def run_modal_streaming(*args: str, heartbeat_label: str) -> str:
+    command = str(MODAL_CLI) if MODAL_CLI else "modal"
+    return run_streaming([command, *args], heartbeat_label)
 
 
 def run_bootstrap_with_progress() -> None:
@@ -212,8 +295,11 @@ def resolve_modal_environment() -> str:
 
 
 def deploy() -> str:
-    output = run_modal("deploy", str(ROOT / "modal" / "goose_studio_executor.py"), capture=True)
-    print(output, flush=True)
+    output = run_modal_streaming(
+        "deploy",
+        str(ROOT / "modal" / "goose_studio_executor.py"),
+        heartbeat_label="Modal deployment",
+    )
     label = "goose-studio-api"
     match = re.search(rf"https://[^\s]+--{label}\.modal\.run", output)
     if not match:
@@ -268,10 +354,57 @@ def write_local_config(endpoint: str, api_key: str, workspace: str, environment:
     path.chmod(0o600)
 
 
-def check_endpoint(endpoint: str) -> None:
-    with urllib.request.urlopen(f"{endpoint}/health", timeout=30) as response:
-        if json.load(response).get("status") != "ok":
-            raise RuntimeError("Deployed endpoint health check failed")
+def check_endpoint(endpoint: str, api_key: str, attempts: int = 5, retry_delay: float = 2.0) -> None:
+    """Verify both endpoint health and authentication before setup reports success."""
+    request = urllib.request.Request(
+        f"{endpoint.rstrip('/')}/auth-check",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                if json.load(response).get("status") != "ok":
+                    raise RuntimeError("Deployed endpoint authentication check failed")
+                return
+        except urllib.error.HTTPError as exc:
+            if exc.code != 401:
+                raise
+            if attempt + 1 >= attempts:
+                raise InvalidApplicationApiKeyError(
+                    "The deployed Modal app rejected its application API key"
+                ) from exc
+            print(
+                "[setup] Waiting for the deployed application's credentials to become available...",
+                flush=True,
+            )
+            time.sleep(retry_delay)
+
+
+def deploy_and_verify(app_name: str, api_key: str, existing_api_key: str) -> tuple[str, str]:
+    """Deploy the app and repair a stale saved key without asking the user for tokens again."""
+    print('[progress] {"stage":"deploy","current":0,"total":1,"message":"Deploying your GPU app"}', flush=True)
+    endpoint = deploy()
+    print("[setup] Verifying the deployed endpoint...", flush=True)
+    try:
+        check_endpoint(endpoint, api_key)
+    except InvalidApplicationApiKeyError:
+        if not existing_api_key:
+            raise
+        print(
+            "[setup] The saved application key was rejected. Repairing the Modal app automatically...",
+            flush=True,
+        )
+        api_key = secrets.token_urlsafe(32)
+        print("[setup] Creating replacement application credentials...", flush=True)
+        create_application_secret(f"{app_name}-api-key", api_key)
+        print(
+            '[progress] {"stage":"deploy","current":0,"total":1,"message":"Redeploying with fresh application credentials"}',
+            flush=True,
+        )
+        endpoint = deploy()
+        print("[setup] Verifying the repaired endpoint...", flush=True)
+        check_endpoint(endpoint, api_key)
+    return endpoint, api_key
 
 
 def main() -> None:
@@ -297,7 +430,8 @@ def main() -> None:
     print('[progress] {"stage":"credentials","current":0,"total":1,"message":"Validating Modal credentials"}', flush=True)
     validate_modal()
     print('[progress] {"stage":"credentials","current":1,"total":1,"message":"Modal credentials verified"}', flush=True)
-    api_key = os.getenv("GOOSE_STUDIO_EXISTING_API_KEY") or secrets.token_urlsafe(32)
+    existing_api_key = os.getenv("GOOSE_STUDIO_EXISTING_API_KEY", "").strip()
+    api_key = existing_api_key or secrets.token_urlsafe(32)
     workspace = os.getenv("GOOSE_STUDIO_WORKSPACE", "").strip()
     environment = resolve_modal_environment()
     os.environ["MODAL_ENVIRONMENT"] = environment
@@ -323,10 +457,7 @@ def main() -> None:
         else:
             print("[setup] Assets already installed; skipping model bootstrap.", flush=True)
 
-        print('[progress] {"stage":"deploy","current":0,"total":1,"message":"Deploying your GPU app"}', flush=True)
-        endpoint = deploy()
-        print("[setup] Verifying the deployed endpoint...", flush=True)
-        check_endpoint(endpoint)
+        endpoint, api_key = deploy_and_verify(app_name, api_key, existing_api_key)
     except Exception:
         for old_name, new_name in reversed(renamed_volumes):
             if volume_exists(new_name) and not volume_exists(old_name):

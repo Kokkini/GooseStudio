@@ -11,7 +11,7 @@ import modal
 APP_NAME = "goose-studio-bootstrap"
 VOLUME_NAME = "goose-studio-assets"
 ROOT = Path("/assets")
-RUNTIME_VERSION = "v1.2.0"
+RUNTIME_VERSION = "v1.3.0"
 
 app = modal.App(APP_NAME)
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)

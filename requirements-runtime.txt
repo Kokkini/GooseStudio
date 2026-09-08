@@ -41,14 +41,19 @@ ffmpeg-python==0.2.0
 scikit-image==0.26.0
 numpy==2.4.3
 transformers==5.3.0
-comfy-kitchen==0.2.8
-comfyui-frontend-package==1.43.18
-comfyui-workflow-templates==0.9.85
-comfyui-workflow-templates-core==0.3.239
-comfyui-workflow-templates-media-api==0.3.79
-comfyui-workflow-templates-media-image==0.3.143
-comfyui-workflow-templates-media-other==0.3.205
-comfyui-workflow-templates-media-video==0.3.88
+comfy-kitchen==0.2.31
+comfy-aimdo==0.4.15
+comfy-angle==0.1.1
+comfyui-embedded-docs==0.5.10
+comfyui-frontend-package==1.51.9
+comfyui-workflow-templates==0.11.52
+comfyui-workflow-templates-core==0.3.329
+comfyui-workflow-templates-json==0.1.64
+comfyui-workflow-templates-media-assets-01==0.1.37
+comfyui-workflow-templates-media-api==0.3.84
+comfyui-workflow-templates-media-image==0.3.160
+comfyui-workflow-templates-media-other==0.3.229
+comfyui-workflow-templates-media-video==0.3.101
 # Hunyuan 3D 2.1 shape, UV, and textured-mesh dependencies.
 trimesh==4.12.2
 pymeshlab==2025.7.post1

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-IMAGE=${1:-ghcr.io/kokkini/goose-studio-runtime:v1.2.0}
+IMAGE=${1:-ghcr.io/kokkini/goose-studio-runtime:v1.3.0}
 PYTHON=${PYTHON:-python3}
 OUTPUT=${2:---load}
 

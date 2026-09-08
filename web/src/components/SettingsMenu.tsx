@@ -1,4 +1,4 @@
-import { ExternalLink, FileText, Settings as SettingsIcon, UserRound } from 'lucide-react'
+import { ExternalLink, FileText, RefreshCw, Settings as SettingsIcon, UserRound } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 
 interface Props {
@@ -7,10 +7,11 @@ interface Props {
   onToggle: () => void
   onClose: () => void
   onViewLog: () => void
-  onConnectAccount: () => void
+  onUpdateApp: () => void
+  onSwitchAccount: () => void
 }
 
-export default function SettingsMenu({ open, usageUrl, onToggle, onClose, onViewLog, onConnectAccount }: Props) {
+export default function SettingsMenu({ open, usageUrl, onToggle, onClose, onViewLog, onUpdateApp, onSwitchAccount }: Props) {
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -36,7 +37,8 @@ export default function SettingsMenu({ open, usageUrl, onToggle, onClose, onView
       </button>
       {open && <div className="settings-panel" role="menu">
         <button role="menuitem" onClick={() => { onViewLog(); onClose() }}><FileText size={16} /> View app log</button>
-        <button role="menuitem" onClick={() => { onConnectAccount(); onClose() }}><UserRound size={16} /> Connect new Modal account</button>
+        <button role="menuitem" onClick={() => { onUpdateApp(); onClose() }}><RefreshCw size={16} /> Update Modal app</button>
+        <button role="menuitem" onClick={() => { onSwitchAccount(); onClose() }}><UserRound size={16} /> Switch Modal account</button>
         <a role="menuitem" href={usageUrl} target="_blank" rel="noreferrer" onClick={onClose}><ExternalLink size={16} /> View Modal's usage</a>
       </div>}
     </div>

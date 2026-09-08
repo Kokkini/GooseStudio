@@ -18,6 +18,10 @@ const IMAGE_EDIT_SECONDS = 120
 // num_chunks 16000, and the RepairLongEdgeOutliers node enabled: 198.04s
 // inside ComfyUI plus the observed ~40s cold startup.
 const IMAGE_TO_3D_SECONDS = 238.04
+// Initial Trellis 2 estimate until the new workflow has a Modal benchmark.
+// It is intentionally conservative because Trellis 2 runs several shape,
+// texture, and mesh-processing stages in one GPU job.
+const IMAGE_TO_3D_V2_SECONDS = 360
 const LITE_UPSCALE_SECONDS = 30
 // Standalone CPU voxelizer measurements for 3d_to_voxel.glb. The first value
 // includes Modal's cold function overhead; use a piecewise fit between the
@@ -119,6 +123,12 @@ export function estimateWorkflow(workflow: WorkflowKind, options: EstimateOption
         ? voxelizePostprocessSeconds(options.voxelResolution ?? 128)
         : 0
       return estimate(IMAGE_TO_3D_SECONDS + voxelSeconds, L40S_RATE, 'L40S')
+    }
+    case 'image-to-3d-v2': {
+      const voxelSeconds = options.voxelize
+        ? voxelizePostprocessSeconds(options.voxelResolution ?? 128)
+        : 0
+      return estimate(IMAGE_TO_3D_V2_SECONDS + voxelSeconds, L40S_RATE, 'L40S')
     }
     case 'voxelize':
       return estimate(voxelizeSeconds(options.voxelResolution ?? 128), CPU_CORE_RATE * VOXEL_CPU_CORES, '2 CPU cores')

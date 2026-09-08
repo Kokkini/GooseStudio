@@ -10,12 +10,12 @@ Remove-Item $BuildRoot, $Stage -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $BuildRoot, $Stage -ItemType Directory -Force | Out-Null
 
 python -m venv $Venv
-# Keep the release build on public PyPI. The workstation may have a system-wide
-# extra index configured for unrelated CUDA package builds; inheriting it makes
-# this small sidecar build wait through unreachable-index retries.
+# Keep the release build on public PyPI. --isolated prevents workstation-wide
+# pip configuration from affecting this build; the site override also replaces
+# any system-level extra index with public PyPI.
 & $Python -m pip config --site set global.index-url "https://pypi.org/simple"
-& $Python -m pip config --site set global.extra-index-url ""
-& $Python -m pip install --disable-pip-version-check -r (Join-Path $Root "requirements-setup.txt")
+& $Python -m pip config --site set global.extra-index-url "https://pypi.org/simple"
+& $Python -m pip --isolated install --disable-pip-version-check --index-url "https://pypi.org/simple" -r (Join-Path $Root "requirements-setup.txt")
 
 $Common = @(
     "--noconfirm",

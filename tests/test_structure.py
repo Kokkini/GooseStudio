@@ -13,6 +13,7 @@ class ProjectStructureTest(unittest.TestCase):
             "wan-character-swap.json": {"159", "160", "301", "360", "368", "548:537"},
             "z-image-turbo.json": {"9", "57:27", "57:13", "57:3", "57:28", "57:30"},
             "image-to-3d.json": {"14", "54", "4", "9", "43", "44", "45", "19", "20", "21", "49", "57"},
+            "image-to-3d-v2.json": {"3", "4", "12", "15", "18", "23", "40", "55", "56", "87", "91", "92", "93", "94", "98", "108", "117", "118", "119", "122", "125", "126", "147", "186", "192", "193", "196", "199", "202", "210", "224", "233", "238", "241", "242", "247", "248", "252", "260", "261", "279", "282", "285", "288", "298", "299", "312", "314", "315", "316", "318", "319", "322"},
         }
         for filename, nodes in cases.items():
             with self.subTest(filename=filename):
@@ -31,8 +32,21 @@ class ProjectStructureTest(unittest.TestCase):
             "workflow['9'].inputs.filename_prefix",
             "workflow['14'].inputs.image",
             "workflow['57'].inputs.filename_prefix",
+            "workflow['122'].inputs.image",
+            "workflow['316'].inputs.value = model === 'trellis2'",
+            "workflow['322'].inputs.filename_prefix = `mesh/${jobId}/${model === 'trellis2' ? 'trellis2' : 'pixal3d'}`",
         ):
             self.assertIn(mutation, source)
+        self.assertIn("model: ImageTo3dV2Model = 'trellis2'", source)
+        app = (ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
+        self.assertIn("useState<'trellis2' | 'pixal3d'>('trellis2')", app)
+        self.assertIn("Trellis 2", app)
+        self.assertIn("Pixal3D", app)
+
+    def test_image_to_3d_v2_uses_current_unwrap_mesh_padding_limit(self):
+        workflow = json.loads((ROOT / "web" / "workflows" / "image-to-3d-v2.json").read_text(encoding="utf-8"))
+        self.assertEqual(workflow["196"]["inputs"]["padding"], 1)
+        self.assertEqual(workflow["196"]["inputs"]["weld_distance"], 0.0002)
 
     def test_modal_executor_has_no_workflow_specific_node_ids(self):
         source = (ROOT / "modal" / "goose_studio_executor.py").read_text(encoding="utf-8")
@@ -86,6 +100,10 @@ class ProjectStructureTest(unittest.TestCase):
             {"hunyuan3d-dit-v2-1-fp16", "hunyuan3d-vae-v2-1-fp16", "hunyuan3d-paint-pbr", "dinov2-giant"},
             set(workflows["image-to-3d"]),
         )
+        self.assertEqual(
+            {"trellis2-int8-convrot", "trellis2-shape-vae-bf16", "trellis2-texture-vae-bf16", "trellis2-dinov3-l", "trellis2-birefnet", "trellis2-pixal3d-int8-convrot", "trellis2-moge-vitl-normal"},
+            set(workflows["image-to-3d-v2"]),
+        )
         executor = (ROOT / "modal" / "goose_studio_executor.py").read_text(encoding="utf-8")
         self.assertIn('@api.post("/workflows/install")', executor)
         self.assertIn("installed_workflows", executor)
@@ -114,6 +132,18 @@ class ProjectStructureTest(unittest.TestCase):
         self.assertIn("if (initializing) return <StartupLoadingScreen />", app)
         self.assertIn(".startup-loading", styles)
 
+    def test_settings_exposes_an_in_app_cloud_update_flow(self):
+        app = (ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
+        settings = (ROOT / "web" / "src" / "components" / "SettingsMenu.tsx").read_text(encoding="utf-8")
+        dialog = (ROOT / "web" / "src" / "components" / "SetupDialog.tsx").read_text(encoding="utf-8")
+        self.assertIn("const [setupMode, setSetupMode]", app)
+        self.assertIn("onUpdateApp={updateCloudApp}", app)
+        self.assertIn("onUpdateApp", settings)
+        self.assertIn("Update Modal app", settings)
+        self.assertIn("mode === 'update'", dialog)
+        self.assertIn("Update Modal app", dialog)
+        self.assertIn("Your creations, files, and Modal credits stay unchanged.", dialog)
+
     def test_docker_image_contains_all_custom_nodes(self):
         installer = (ROOT / "scripts" / "install.py").read_text(encoding="utf-8")
         self.assertNotIn("prepare-custom-nodes.py", installer)
@@ -138,7 +168,8 @@ class ProjectStructureTest(unittest.TestCase):
         self.assertIn("DifferentiableRenderer", dockerfile)
         executor = (ROOT / "modal" / "goose_studio_executor.py").read_text(encoding="utf-8")
         self.assertIn('"ghcr.io/kokkini/goose-studio-runtime', executor)
-        self.assertIn("ae9b39249e6fc8db305cfeb13c8013552c58481a35f4584c6b24d95c15f2d085", executor)
+        self.assertIn("6b83aae6502341617bf6ae68804f56f5f308cfcc0712e1ee46cbbda9d7caeacb", executor)
+        self.assertNotIn("ae9b39249e6fc8db305cfeb13c8013552c58481a35f4584c6b24d95c15f2d085", executor)
         self.assertNotIn("6301fa731b62641bdaf3b23647f97966986542cb366d99aa8259d746a7e7db3d", executor)
         self.assertNotIn('COMFYUI_ROOT / "custom_nodes"', executor)
         self.assertIn("HUNYUAN3D_PAINT_MODEL", executor)
@@ -197,7 +228,9 @@ class ProjectStructureTest(unittest.TestCase):
 
     def test_mesh_outputs_are_collected_as_downloadable_models(self):
         executor = (ROOT / "modal" / "goose_studio_executor.py").read_text(encoding="utf-8")
-        self.assertIn('( "images", "gifs", "audio", "meshes" )'.replace(" ", ""), executor.replace(" ", ""))
+        self.assertIn('( "images", "gifs", "audio", "meshes", "3d" )'.replace(" ", ""), executor.replace(" ", ""))
+        self.assertIn('model_result = node_output.get("result")', executor)
+        self.assertIn('relative = Path(model_file)', executor)
         self.assertIn('".glb": "model/gltf-binary"', executor)
         app = (ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
         self.assertIn("isModelOutput", app)
@@ -330,6 +363,16 @@ class ProjectStructureTest(unittest.TestCase):
         self.assertIn('"app\\tools"', sidecar)
         self.assertIn('"tools\\voxelize_glb.py"', sidecar)
 
+    def test_workflow_install_failures_are_prominent_and_explain_the_error(self):
+        dialog = (ROOT / "web" / "src" / "components" / "WorkflowInstallDialog.tsx").read_text(encoding="utf-8")
+        styles = (ROOT / "web" / "src" / "styles.css").read_text(encoding="utf-8")
+        self.assertIn("CircleAlert", dialog)
+        self.assertIn('className="install-failure"', dialog)
+        self.assertIn("<strong>Error:</strong>", dialog)
+        self.assertIn('role="alert"', dialog)
+        self.assertIn("setup-heading-error", styles)
+        self.assertIn("background:#fff0ee", styles)
+
     def test_setup_presentation_is_shared_by_browser_and_electron(self):
         app = (ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
         self.assertIn("<SetupDialog key={setupInstance} open={setupOpen} fullScreen mandatory={!connected}", app)
@@ -352,7 +395,8 @@ class ProjectStructureTest(unittest.TestCase):
         self.assertIn("Setup Modal", app)
         self.assertIn("key={setupInstance}", app)
         self.assertIn("View app log", settings)
-        self.assertIn("Connect new Modal account", settings)
+        self.assertIn("Update Modal app", settings)
+        self.assertIn("Switch Modal account", settings)
         self.assertIn("View Modal's usage", settings)
         self.assertIn("getAppLog", desktop)
         self.assertIn("appendAppLog", desktop)
@@ -399,6 +443,10 @@ class ProjectStructureTest(unittest.TestCase):
         self.assertIn("windows-latest", workflow)
         self.assertIn("build-windows-sidecar.ps1", workflow)
         self.assertIn("pnpm --dir web package:win", workflow)
+        sidecar_script = (ROOT / "scripts" / "build-windows-sidecar.ps1").read_text(encoding="utf-8")
+        self.assertIn('global.extra-index-url "https://pypi.org/simple"', sidecar_script)
+        self.assertIn("--isolated install", sidecar_script)
+        self.assertIn('--index-url "https://pypi.org/simple"', sidecar_script)
 
     def test_docker_image_keeps_package_caches_out_of_image(self):
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
@@ -422,8 +470,8 @@ class ProjectStructureTest(unittest.TestCase):
             if line.startswith("RUNTIME_VERSION = ")
         )
 
-        self.assertEqual(electron_version, "1.1.1")
-        self.assertEqual(runtime_version, "v1.2.0")
+        self.assertEqual(electron_version, "1.1.6")
+        self.assertEqual(runtime_version, "v1.3.0")
         self.assertIn(runtime_version, (ROOT / "scripts" / "build-runtime-image.sh").read_text(encoding="utf-8"))
         self.assertIn(
             f"ARG RUNTIME_VERSION={runtime_version.removeprefix('v')}",
