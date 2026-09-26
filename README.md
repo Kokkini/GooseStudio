@@ -7,7 +7,7 @@
 <p align="center">Create images, videos, 3D models, and voxel models using your own Modal account and credits.</p>
 
 <p align="center">
-  <a href="https://github.com/Kokkini/GooseStudio/releases/download/v1.1.6/Goose-Studio-Setup-1.1.6.exe"><strong>Download for Windows</strong></a>
+  <a href="https://github.com/Kokkini/GooseStudio/releases/download/v1.1.7/Goose-Studio-Setup-1.1.7.exe"><strong>Download for Windows</strong></a>
   ·
   <a href="https://github.com/Kokkini/GooseStudio/releases">All releases</a>
 </p>
@@ -36,7 +36,7 @@ The Windows app includes everything it needs. You do not need to install Python,
 
 ## Get started
 
-1. [Download the latest Windows installer (v1.1.6)](https://github.com/Kokkini/GooseStudio/releases/download/v1.1.6/Goose-Studio-Setup-1.1.6.exe).
+1. [Download the latest Windows installer (v1.1.7)](https://github.com/Kokkini/GooseStudio/releases/download/v1.1.7/Goose-Studio-Setup-1.1.7.exe).
 2. Install and open Goose Studio.
 3. Select **Setup Modal** and follow the instructions in the app.
 4. When asked, paste the complete token command copied from Modal. Never share that command with anyone.
@@ -52,12 +52,16 @@ Finished work appears under **Your creations**. Open an item to view or download
 
 Your files are sent directly to your own Modal workspace. Goose Studio does not provide a separate storage service for your media.
 
+On Windows, Goose Studio stores your Modal access encrypted on this computer so it can update your Modal app and download large files without asking you to paste the token again. You can remove the saved access in **Settings**; that removes only the local copy and does not revoke the token in Modal.
+
 ## Settings and help
 
 The **Settings** menu lets you:
 
 - View the latest Goose Studio log
+- Update the Modal app
 - Connect a different Modal account
+- Forget saved Modal access from this computer
 - Open Modal's usage page
 
 If something goes wrong, open the technical details in the app's error or setup panel. They contain the information needed to diagnose the problem without putting the full error message in the main status card.

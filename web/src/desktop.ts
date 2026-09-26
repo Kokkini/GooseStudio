@@ -1,4 +1,5 @@
-import type { ModalCredentials, RuntimeConfig, SetupStatus } from './types.ts'
+import type { ModalCredentials, ModalSetupMode, OutputFile, RuntimeConfig, SetupStatus, VolumeDownloadRequest } from './types.ts'
+import { downloadOutput } from './api.ts'
 
 export async function getRuntimeConfig(): Promise<RuntimeConfig> {
   if (window.gooseStudio) return window.gooseStudio.getConfig()
@@ -7,16 +8,52 @@ export async function getRuntimeConfig(): Promise<RuntimeConfig> {
   return response.json()
 }
 
-export async function startModalSetup(credentials: ModalCredentials) {
-  if (window.gooseStudio) return window.gooseStudio.startSetup(credentials)
+export async function startModalSetup(mode: ModalSetupMode, credentials: ModalCredentials | null) {
+  if (window.gooseStudio) {
+    try {
+      return await window.gooseStudio.startSetup(mode, credentials)
+    } finally {
+      if (credentials) {
+        credentials.tokenId = ''
+        credentials.tokenSecret = ''
+      }
+    }
+  }
+  if (!credentials) throw new Error('This browser setup needs the Modal token command again.')
+  const body = JSON.stringify(credentials)
+  credentials.tokenId = ''
+  credentials.tokenSecret = ''
   const response = await fetch('/setup', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(credentials),
+    body,
   })
   const result = await response.json()
   if (!response.ok) throw new Error(result.error || 'Could not start setup')
   return result
+}
+
+export async function downloadOutputToDisk(config: RuntimeConfig, jobId: string, output: OutputFile) {
+  const request: VolumeDownloadRequest = {
+    jobId,
+    relativePath: output.relative_path,
+    filename: output.filename,
+  }
+  if (window.gooseStudio) return window.gooseStudio.downloadModalOutput(request)
+
+  const blob = await downloadOutput(config, jobId, output.id)
+  const objectUrl = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = objectUrl
+  anchor.download = output.filename
+  anchor.click()
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
+  return { canceled: false }
+}
+
+export async function forgetSavedModalCredentials() {
+  if (window.gooseStudio) return window.gooseStudio.forgetModalCredentials()
+  return false
 }
 
 export async function getModalSetupStatus(): Promise<SetupStatus> {

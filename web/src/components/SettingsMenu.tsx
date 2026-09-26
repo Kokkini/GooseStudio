@@ -1,4 +1,4 @@
-import { ExternalLink, FileText, RefreshCw, Settings as SettingsIcon, UserRound } from 'lucide-react'
+import { ExternalLink, FileText, KeyRound, RefreshCw, Settings as SettingsIcon, UserRound } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 
 interface Props {
@@ -9,9 +9,11 @@ interface Props {
   onViewLog: () => void
   onUpdateApp: () => void
   onSwitchAccount: () => void
+  hasSavedModalCredentials: boolean
+  onForgetModalAccess: () => void
 }
 
-export default function SettingsMenu({ open, usageUrl, onToggle, onClose, onViewLog, onUpdateApp, onSwitchAccount }: Props) {
+export default function SettingsMenu({ open, usageUrl, onToggle, onClose, onViewLog, onUpdateApp, onSwitchAccount, hasSavedModalCredentials, onForgetModalAccess }: Props) {
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -39,6 +41,7 @@ export default function SettingsMenu({ open, usageUrl, onToggle, onClose, onView
         <button role="menuitem" onClick={() => { onViewLog(); onClose() }}><FileText size={16} /> View app log</button>
         <button role="menuitem" onClick={() => { onUpdateApp(); onClose() }}><RefreshCw size={16} /> Update Modal app</button>
         <button role="menuitem" onClick={() => { onSwitchAccount(); onClose() }}><UserRound size={16} /> Switch Modal account</button>
+        {hasSavedModalCredentials && <button role="menuitem" onClick={() => { onForgetModalAccess(); onClose() }}><KeyRound size={16} /> Forget saved Modal access</button>}
         <a role="menuitem" href={usageUrl} target="_blank" rel="noreferrer" onClick={onClose}><ExternalLink size={16} /> View Modal's usage</a>
       </div>}
     </div>

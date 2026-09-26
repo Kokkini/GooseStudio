@@ -324,6 +324,14 @@ class ProjectStructureTest(unittest.TestCase):
         self.assertIn("desktop:append-app-log", main)
         self.assertIn("getAppLog", preload)
         self.assertIn("appendAppLog", preload)
+        self.assertIn("encryptedModalCredentials", main)
+        self.assertIn("safeStorage.encryptString(JSON.stringify({ tokenId: credentials.tokenId, tokenSecret: credentials.tokenSecret }))", main)
+        self.assertIn("safeStorage.decryptString(Buffer.from(stored.encryptedModalCredentials", main)
+        self.assertIn("mode === 'update' && !suppliedCredentials ? readSavedModalCredentials() : null", main)
+        self.assertIn("environment.MODAL_ENVIRONMENT = runtimeConfig().modalEnvironment || 'main'", main)
+        self.assertIn("['volume', 'get', '--force', 'goose-studio-io', remotePath", main)
+        self.assertIn("desktop:download-modal-output", preload)
+        self.assertIn("Forget saved Modal access", (ROOT / "web" / "src" / "components" / "SettingsMenu.tsx").read_text(encoding="utf-8"))
 
     def test_setup_failures_are_visible_and_retryable(self):
         installer = (ROOT / "scripts" / "install.py").read_text(encoding="utf-8")
@@ -470,7 +478,7 @@ class ProjectStructureTest(unittest.TestCase):
             if line.startswith("RUNTIME_VERSION = ")
         )
 
-        self.assertEqual(electron_version, "1.1.6")
+        self.assertEqual(electron_version, "1.1.7")
         self.assertEqual(runtime_version, "v1.3.0")
         self.assertIn(runtime_version, (ROOT / "scripts" / "build-runtime-image.sh").read_text(encoding="utf-8"))
         self.assertIn(

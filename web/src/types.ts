@@ -12,12 +12,21 @@ export interface RuntimeConfig {
   apiKey: string
   modalWorkspace?: string
   modalEnvironment?: string
+  hasSavedModalCredentials?: boolean
 }
+
+export type ModalSetupMode = 'setup' | 'update' | 'switch'
 
 export interface ModalCredentials {
   tokenId: string
   tokenSecret: string
   workspace: string
+}
+
+export interface VolumeDownloadRequest {
+  jobId: string
+  relativePath: string
+  filename: string
 }
 
 export interface SetupStatus {

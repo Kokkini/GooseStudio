@@ -7,20 +7,23 @@ import AppLogDialog from './components/AppLogDialog.tsx'
 import SetupDialog from './components/SetupDialog.tsx'
 import SettingsMenu from './components/SettingsMenu.tsx'
 import WorkflowInstallDialog from './components/WorkflowInstallDialog.tsx'
-import { appendAppLog, getRuntimeConfig } from './desktop.ts'
+import { appendAppLog, downloadOutputToDisk, forgetSavedModalCredentials, getRuntimeConfig } from './desktop.ts'
 import { estimateWorkflow, formatCreditEstimate, type WorkflowEstimate } from './estimates.ts'
 import type { Job, JobState, OutputFile, RuntimeConfig, VoxelizationOptions, WorkflowInstallStatus, WorkflowKind } from './types.ts'
 import { characterSwap, imageEdit, imageTo3d, imageTo3dV2, liteUpscale, outputNodes, textToImage, tryOn } from './workflows.ts'
 
 const workflows = [
   { id: 'text-to-image' as const, name: 'Text to Image', summary: 'Create an image from a prompt', icon: Image, color: 'amber' },
+  { id: 'image-to-3d-v2' as const, name: 'Image to 3D (v2)', summary: 'Create a detailed 3D model from an image', icon: Box, color: 'cyan' },
+  { id: 'character-swap' as const, name: 'Character Swap', summary: 'Replace a person across a full video', icon: Video, color: 'cyan' },
   { id: 'image-edit' as const, name: 'Image Edit', summary: 'Restyle, relight, or transform any image', icon: WandSparkles, color: 'amber' },
   { id: 'try-on' as const, name: 'Virtual Try-On', summary: 'Put product clothing on any person', icon: Shirt, color: 'rose' },
-  { id: 'character-swap' as const, name: 'Character Swap', summary: 'Replace a person across a full video', icon: Video, color: 'cyan' },
-  { id: 'image-to-3d' as const, name: 'Image to 3D', summary: 'Turn an image into a textured 3D model', icon: Box, color: 'cyan' },
-  { id: 'image-to-3d-v2' as const, name: 'Image to 3D v2', summary: 'Create a detailed 3D model from an image', icon: Box, color: 'cyan' },
   { id: 'voxelize' as const, name: 'Voxelize 3D model', summary: 'Turn a GLB model into a .vox file', icon: Box, color: 'cyan' },
   { id: 'lite-upscale' as const, name: 'Image Upscale', summary: 'Upscale one image to four times its size', icon: FlaskConical, color: 'lime' },
+]
+
+const hiddenWorkflowDetails = [
+  { id: 'image-to-3d' as const, name: 'Image to 3D', summary: 'Turn an image into a textured 3D model', icon: Box, color: 'cyan' },
 ]
 
 const builtInWorkflows = new Set<WorkflowKind>(['voxelize'])
@@ -253,7 +256,16 @@ export default function App() {
     setSetupOpen(true)
   }
 
-  const selected = workflows.find((item) => item.id === kind)!
+  const forgetModalAccess = async () => {
+    if (!window.confirm('Forget the saved Modal access on this computer? This does not revoke the token in your Modal account.')) return
+    const forgotten = await forgetSavedModalCredentials()
+    if (forgotten) {
+      setConfig((current) => ({ ...current, hasSavedModalCredentials: false }))
+      appendAppLog('Forgot saved Modal access on this device')
+    }
+  }
+
+  const selected = [...workflows, ...hiddenWorkflowDetails].find((item) => item.id === kind)!
   const selectedRun = runs[kind] || idleWorkflowRun()
   const historyPageCount = Math.max(1, Math.ceil(history.length / HISTORY_PAGE_SIZE))
   const visibleHistory = history.slice(historyPage * HISTORY_PAGE_SIZE, (historyPage + 1) * HISTORY_PAGE_SIZE)
@@ -261,7 +273,7 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand"><span className="brand-mark"><img src={gooseStudioLogo} alt="" /></span><div><strong>Goose Studio</strong><small>Powered by your Modal credits</small></div></div>
-        <div className="connection-state"><span className={connected ? 'online' : ''} />{connected ? 'Modal connected' : 'Setup required'}{!connected && <button className="setup-modal-button" onClick={() => { setSetupMode('setup'); setSetupOpen(true) }}><CloudCog size={16} /> Setup Modal</button>}<SettingsMenu open={settingsOpen} usageUrl={modalUsageUrl(config)} onToggle={() => setSettingsOpen((current) => !current)} onClose={() => setSettingsOpen(false)} onViewLog={() => setLogOpen(true)} onUpdateApp={updateCloudApp} onSwitchAccount={switchModalAccount} /></div>
+        <div className="connection-state"><span className={connected ? 'online' : ''} />{connected ? 'Modal connected' : 'Setup required'}{!connected && <button className="setup-modal-button" onClick={() => { setSetupMode('setup'); setSetupOpen(true) }}><CloudCog size={16} /> Setup Modal</button>}<SettingsMenu open={settingsOpen} usageUrl={modalUsageUrl(config)} hasSavedModalCredentials={Boolean(config.hasSavedModalCredentials)} onToggle={() => setSettingsOpen((current) => !current)} onClose={() => setSettingsOpen(false)} onViewLog={() => setLogOpen(true)} onUpdateApp={updateCloudApp} onSwitchAccount={switchModalAccount} onForgetModalAccess={() => void forgetModalAccess()} /></div>
       </header>
 
       <main>
@@ -295,7 +307,7 @@ export default function App() {
         <section className="history-section"><div className="section-title"><div><p className="eyebrow">Recent work</p><h2>Your creations</h2></div><Clock3 /></div>{history.length ? <><div className="history-grid">{visibleHistory.map((item) => <HistoryCard key={item.job_id} item={item} config={config} onOpen={() => { const workflow = item.workflow || 'text-to-image'; setKind(workflow); updateWorkflowRun(workflow, { job: item, state: 'completed', message: 'Loaded from history', retry: null }) }} onDelete={() => { void removeCreation(item) }} />)}</div>{historyPageCount > 1 && <nav className="history-pagination" aria-label="Your creations pages"><button type="button" onClick={() => setHistoryPage((current) => Math.max(0, current - 1))} disabled={historyPage === 0} aria-label="Previous creations page"><ChevronLeft size={16} /></button><span>Page {historyPage + 1} of {historyPageCount}</span><button type="button" onClick={() => setHistoryPage((current) => Math.min(historyPageCount - 1, current + 1))} disabled={historyPage === historyPageCount - 1} aria-label="Next creations page"><ChevronRight size={16} /></button></nav>}</> : <div className="empty-history"><Image /><span>Your finished images, videos, and 3D models will appear here.</span></div>}</section>
       </main>
       <footer><span>Goose Studio</span><span>Files stay in your Modal account</span></footer>
-      <SetupDialog key={setupInstance} open={setupOpen} fullScreen mandatory={!connected} mode={setupMode} onClose={() => setSetupOpen(false)} onComplete={loadConfig} />
+      <SetupDialog key={setupInstance} open={setupOpen} fullScreen mandatory={!connected} mode={setupMode} hasSavedModalCredentials={Boolean(config.hasSavedModalCredentials)} onClose={() => setSetupOpen(false)} onComplete={loadConfig} />
       <AppLogDialog open={logOpen} onClose={() => setLogOpen(false)} />
       <WorkflowInstallDialog workflow={installing} status={installStatus} onClose={() => { setInstalling(null); setInstallStatus({ state: 'idle' }) }} />
     </div>
@@ -427,10 +439,11 @@ function ModeSwitch({ mode, setMode }: { mode: 'speed' | 'quality'; setMode: (mo
 function ModelSwitch({ model, setModel }: { model: 'trellis2' | 'pixal3d'; setModel: (model: 'trellis2' | 'pixal3d') => void }) { return <div className="model-choice"><label>3D model</label><div className="mode-switch model-switch"><button className={model === 'trellis2' ? 'active' : ''} onClick={() => setModel('trellis2')}>Trellis 2</button><button className={model === 'pixal3d' ? 'active' : ''} onClick={() => setModel('pixal3d')}>Pixal3D</button></div></div> }
 function Toggle({ label, checked, setChecked }: { label: string; checked: boolean; setChecked: (value: boolean) => void }) { return <label className="toggle"><button className={checked ? 'on' : ''} onClick={() => setChecked(!checked)}><span /></button>{label}</label> }
 
-function useOutputSource(config: RuntimeConfig, jobId: string, outputId: string) {
+function useOutputSource(config: RuntimeConfig, jobId: string, outputId: string, enabled = true) {
   const [source, setSource] = useState('')
   const [error, setError] = useState('')
   useEffect(() => {
+    if (!enabled) return
     let active = true
     let objectUrl = ''
     downloadOutput(config, jobId, outputId).then((blob) => {
@@ -442,13 +455,14 @@ function useOutputSource(config: RuntimeConfig, jobId: string, outputId: string)
       active = false
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [config, jobId, outputId])
+  }, [config, jobId, outputId, enabled])
   return { source, error }
 }
 
 function OutputThumbnail({ output, jobId, config }: { output: OutputFile; jobId: string; config: RuntimeConfig }) {
-  const { source } = useOutputSource(config, jobId, output.id)
-  return source ? <img src={source} alt="" /> : <div className="video-thumb"><LoaderCircle className="spin" /></div>
+  const imageOutput = isImageOutput(output)
+  const { source } = useOutputSource(config, jobId, output.id, imageOutput)
+  return source ? <img src={source} alt="" /> : <div className={isModelOutput(output) ? 'model-thumb' : 'video-thumb'}>{isModelOutput(output) ? <Box /> : <Video />}</div>
 }
 
 function isImageOutput(output: OutputFile) { return output.content_type.startsWith('image/') }
@@ -458,8 +472,26 @@ function isModelOutput(output: OutputFile) { return output.content_type.startsWi
 function isVoxelPackage(output: OutputFile) { return output.filename.toLowerCase().endsWith('.zip') }
 
 function OutputMedia({ output, jobId, config }: { output: OutputFile; jobId: string; config: RuntimeConfig }) {
-  const { source, error } = useOutputSource(config, jobId, output.id)
-  return <div className="output-media">{source ? <>{isImageOutput(output) ? <img src={source} alt="Generated output" /> : isModelOutput(output) ? <div className="model-output"><Box /><strong>{isVoxelPackage(output) ? '3D package ready' : '3D model ready'}</strong><small>{output.filename}</small></div> : <video src={source} controls />}<a href={source} download={output.filename}><Download size={16} /> Download</a></> : <div className="result-placeholder">{error ? <CircleAlert className="error-icon" /> : <LoaderCircle className="spin" />}<small>{error || 'Loading output...'}</small></div>}</div>
+  const imageOutput = isImageOutput(output)
+  const isModel = isModelOutput(output)
+  const { source, error } = useOutputSource(config, jobId, output.id, !isModel)
+  const [downloading, setDownloading] = useState(false)
+  const [downloadError, setDownloadError] = useState('')
+  const download = async () => {
+    if (downloading) return
+    setDownloading(true)
+    setDownloadError('')
+    try { await downloadOutputToDisk(config, jobId, output) }
+    catch (reason) { setDownloadError((reason as Error).message) }
+    finally { setDownloading(false) }
+  }
+  const readyLabel = isModel ? (isVoxelPackage(output) ? '3D package ready' : '3D model ready') : 'Video ready'
+  return <div className="output-media">
+    {source ? (imageOutput ? <img src={source} alt="Generated output" /> : isModel ? <div className="model-output"><Box /><strong>{readyLabel}</strong><small>{output.filename}</small></div> : <video src={source} controls />)
+      : isModel ? <div className="model-output"><Box /><strong>{readyLabel}</strong><small>{output.filename}</small></div>
+        : <div className="result-placeholder">{error ? <CircleAlert className="error-icon" /> : <LoaderCircle className="spin" />}<small>{error || 'Loading output...'}</small></div>}
+    <div className="output-download-area"><button type="button" onClick={() => void download()} disabled={downloading}><Download size={16} /> {downloading ? 'Downloading from Modal…' : 'Download'}</button>{downloadError && <small role="alert">{downloadError}</small>}</div>
+  </div>
 }
 
 function ResultPanel({ state, message, job, config, onCancel, onRetry }: { state: JobState; message: string; job: Job | null; config: RuntimeConfig; onCancel: () => void; onRetry: (() => void) | null }) {

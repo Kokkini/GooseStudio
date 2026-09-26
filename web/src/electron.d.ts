@@ -1,8 +1,10 @@
-import type { ModalCredentials, RuntimeConfig, SetupStatus } from './types.ts'
+import type { ModalCredentials, ModalSetupMode, RuntimeConfig, SetupStatus, VolumeDownloadRequest } from './types.ts'
 
 interface GooseStudioDesktop {
   getConfig(): Promise<RuntimeConfig>
-  startSetup(credentials: ModalCredentials): Promise<{ state: string }>
+  startSetup(mode: ModalSetupMode, credentials: ModalCredentials | null): Promise<{ state: string }>
+  downloadModalOutput(request: VolumeDownloadRequest): Promise<{ canceled: boolean }>
+  forgetModalCredentials(): Promise<boolean>
   getSetupStatus(): Promise<SetupStatus>
   getAppLog(): Promise<string>
   appendAppLog(message: string): Promise<{ state: string }>

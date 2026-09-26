@@ -2,19 +2,21 @@ import { CheckCircle2, CircleAlert, Cloud, ExternalLink, LoaderCircle, Terminal,
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { getModalSetupStatus, startModalSetup } from '../desktop.ts'
 import { parseModalTokenCommand } from '../tokenCommand.ts'
-import type { SetupStatus } from '../types.ts'
+import type { ModalSetupMode, SetupStatus } from '../types.ts'
 
 interface Props {
   open: boolean
   fullScreen?: boolean
   mandatory?: boolean
-  mode?: 'setup' | 'update' | 'switch'
+  mode?: ModalSetupMode
+  hasSavedModalCredentials?: boolean
   onClose: () => void
   onComplete: () => Promise<boolean>
 }
 
-export default function SetupDialog({ open, fullScreen = false, mandatory = false, mode = 'setup', onClose, onComplete }: Props) {
+export default function SetupDialog({ open, fullScreen = false, mandatory = false, mode = 'setup', hasSavedModalCredentials = false, onClose, onComplete }: Props) {
   const [tokenCommand, setTokenCommand] = useState('')
+  const [replaceSavedCredentials, setReplaceSavedCredentials] = useState(false)
   const [workspace, setWorkspace] = useState('')
   const [status, setStatus] = useState<SetupStatus>({ state: 'idle', lines: [] })
   const [error, setError] = useState('')
@@ -52,16 +54,21 @@ export default function SetupDialog({ open, fullScreen = false, mandatory = fals
 
   const install = async () => {
     setError('')
-    const credentials = parseModalTokenCommand(tokenCommand)
-    if (!credentials) {
+    const commandProvided = Boolean(tokenCommand.trim())
+    const credentials = commandProvided ? parseModalTokenCommand(tokenCommand) : null
+    if (commandProvided && !credentials) {
+      setError('Paste the complete “modal token set ...” command from Modal, including its --profile value.')
+      return
+    }
+    if (!credentials && !(mode === 'update' && hasSavedModalCredentials)) {
       setError('Paste the complete “modal token set ...” command from Modal, including its --profile value.')
       return
     }
     try {
-      setWorkspace(credentials.workspace)
+      setWorkspace(credentials?.workspace || '')
       connectionCheck.current = null
-      await startModalSetup(credentials)
       setTokenCommand('')
+      await startModalSetup(mode, credentials)
       setStatus({ state: 'running', lines: ['Starting setup...'] })
     } catch (error) {
       setError((error as Error).message)
@@ -78,6 +85,7 @@ export default function SetupDialog({ open, fullScreen = false, mandatory = fals
   const completed = status.state === 'completed'
   const updating = mode === 'update'
   const switching = mode === 'switch'
+  const usingSavedCredentials = updating && hasSavedModalCredentials && !replaceSavedCredentials
   const headingKicker = updating ? 'Modal app update' : switching ? 'Change account' : 'One-time setup'
   const headingTitle = updating ? 'Update Modal app' : switching ? 'Connect a different Modal account' : 'Connect your Modal account'
   const importantTitle = updating ? 'Update Modal app' : 'Important! Read first'
@@ -123,18 +131,24 @@ export default function SetupDialog({ open, fullScreen = false, mandatory = fals
                 </aside>
               </div>
               <div className="setup-instructions">
-                <ol className="setup-steps">
-                  <li><span>1</span><div><strong>{firstStep}</strong><a href={firstStepLink} target="_blank">{firstStepLinkText} <ExternalLink size={15} /></a></div></li>
-                  <li><span>2</span><div><strong>{tokenStepTitle}</strong><a href="https://modal.com/settings/profile" target="_blank">Open Modal profile settings <ExternalLink size={15} /></a><ul className="setup-token-steps"><li>Choose <b>API Tokens &amp; Service Users</b>.</li><li>Select <b>New Token</b>.</li><li>Give the token any name.</li></ul></div></li>
-                  <li><span>3</span><div><strong>{copyStepTitle}</strong><small>Copy the entire line beginning with <code>modal token set</code>. You do not need to run the command yourself.</small></div></li>
-                </ol>
-                <label className="command-field"><span><Terminal size={17} /> Paste the complete token command</span><textarea value={tokenCommand} onChange={(e) => setTokenCommand(e.target.value)} rows={4} spellCheck={false} placeholder="modal token set --token-id ak-... --token-secret as-... --profile=my-workspace" /></label>
-                <p className="credential-note">Your token is used only for this setup and is cleared from the browser as soon as installation starts.</p>
+                {usingSavedCredentials ? <div className="saved-credential-callout"><CheckCircle2 size={18} /><span>Using the Modal access saved securely on this computer. No token command needed.</span><button type="button" onClick={() => setReplaceSavedCredentials(true)}>Use a different token</button></div> : <>
+                  <ol className="setup-steps">
+                    <li><span>1</span><div><strong>{firstStep}</strong><a href={firstStepLink} target="_blank">{firstStepLinkText} <ExternalLink size={15} /></a></div></li>
+                    <li><span>2</span><div><strong>{tokenStepTitle}</strong><a href="https://modal.com/settings/profile" target="_blank">Open Modal profile settings <ExternalLink size={15} /></a><ul className="setup-token-steps"><li>Choose <b>API Tokens &amp; Service Users</b>.</li><li>Select <b>New Token</b>.</li><li>Give the token any name.</li></ul></div></li>
+                    <li><span>3</span><div><strong>{copyStepTitle}</strong><small>Copy the entire line beginning with <code>modal token set</code>. You do not need to run the command yourself.</small></div></li>
+                  </ol>
+                  <label className="command-field"><span><Terminal size={17} /> Paste the complete token command</span><textarea value={tokenCommand} onChange={(e) => setTokenCommand(e.target.value)} rows={4} spellCheck={false} placeholder="modal token set --token-id ak-... --token-secret as-... --profile=my-workspace" /></label>
+                </>}
+                <p className="credential-note">{usingSavedCredentials
+                  ? 'The saved token stays encrypted on this computer and is used for this update and direct downloads.'
+                  : window.gooseStudio
+                    ? 'After setup succeeds, Goose Studio encrypts this token on this computer for future updates and direct downloads. You can forget it in Settings.'
+                    : 'The browser setup uses this token only for setup and does not save it.'}</p>
                 {error && <p className="form-error">{error}</p>}
                 {status.state === 'failed' && <div className="setup-failure" role="alert"><CircleAlert size={22} /><div><strong>Setup failed</strong><p>{failureMessage}</p></div></div>}
                 {status.state === 'running' && status.progress ? <div className="setup-progress"><div><span>{status.progress.message}</span><strong>{status.progress.current}/{status.progress.total}</strong></div><div className="progress-track"><span style={{ width: `${Math.max(6, status.progress.current / status.progress.total * 100)}%` }} /></div></div> : null}
                 {status.state === 'running' || status.state === 'failed' ? <details className="setup-details" open><summary>Technical details</summary><pre className="setup-console">{status.lines.join('\n')}</pre></details> : null}
-                <button className="primary-button" disabled={!tokenCommand.trim() || status.state === 'running'} onClick={install}>{status.state === 'running' ? <><LoaderCircle className="spin" /> {runningLabel}</> : status.state === 'failed' ? retryLabel : submitLabel}</button>
+                <button className="primary-button" disabled={(!tokenCommand.trim() && !usingSavedCredentials) || status.state === 'running'} onClick={install}>{status.state === 'running' ? <><LoaderCircle className="spin" /> {runningLabel}</> : status.state === 'failed' ? retryLabel : submitLabel}</button>
               </div>
             </div>
           )}
