@@ -1,5 +1,5 @@
 export type WorkflowKind = 'lite-upscale' | 'text-to-image' | 'image-edit' | 'try-on' | 'character-swap' | 'image-to-3d' | 'image-to-3d-v2' | 'voxelize'
-export type WorkloadKind = 'image' | 'video'
+export type WorkloadKind = 'image' | 'image-to-3d' | 'video'
 export type JobState = 'idle' | 'uploading' | 'preparing' | 'queued' | 'running' | 'completed' | 'failed'
 
 export interface VoxelizationOptions {

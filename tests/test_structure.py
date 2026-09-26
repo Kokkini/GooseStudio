@@ -253,20 +253,52 @@ class ProjectStructureTest(unittest.TestCase):
         executor = (ROOT / "modal" / "goose_studio_executor.py").read_text(encoding="utf-8")
         self.assertNotIn("Upload inputs before submitting", executor)
 
-    def test_gpu_routing_separates_image_and_video_workloads(self):
+    def test_gpu_routing_separates_image_image_to_3d_and_video_workloads(self):
         executor = (ROOT / "modal" / "goose_studio_executor.py").read_text(encoding="utf-8")
         self.assertIn('IMAGE_GPU_TYPE = os.getenv("GOOSE_STUDIO_IMAGE_GPU", "L40S")', executor)
         self.assertIn('VIDEO_GPU_TYPE = os.getenv("GOOSE_STUDIO_VIDEO_GPU", "H100")', executor)
         self.assertIn("gpu=IMAGE_GPU_TYPE", executor)
-        self.assertIn("gpu=VIDEO_GPU_TYPE", executor)
+        self.assertIn("def process_image_to_3d_job(", executor)
+        self.assertIn('"image-to-3d": process_image_to_3d_job', executor)
+        self.assertIn('workload not in {"image", "image-to-3d", "video"}', executor)
+        self.assertGreaterEqual(executor.count("gpu=VIDEO_GPU_TYPE"), 2)
         self.assertIn('workload = payload.get("workload", "video")', executor)
-        self.assertIn("process_function = process_image_job if workload == \"image\" else process_video_job", executor)
+        self.assertIn('"image": process_image_job', executor)
+        self.assertIn('"video": process_video_job', executor)
         self.assertIn("call = process_function.spawn", executor)
         api = (ROOT / "web" / "src" / "api.ts").read_text(encoding="utf-8")
         self.assertIn("workload: WorkloadKind", api)
         self.assertIn("output_node_ids: outputNodeIds, workload", api)
         app = (ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
-        self.assertIn("workflow === 'character-swap' ? 'video' : 'image'", app)
+        self.assertIn("function workloadForWorkflow(workflow: WorkflowKind): WorkloadKind", app)
+        self.assertIn("workflow === 'image-to-3d' || workflow === 'image-to-3d-v2'", app)
+        estimates = (ROOT / "web" / "src" / "estimates.ts").read_text(encoding="utf-8")
+        self.assertIn("return estimate(IMAGE_TO_3D_SECONDS + voxelSeconds, H100_RATE, 'H100')", estimates)
+        self.assertIn("return estimate(IMAGE_TO_3D_V2_SECONDS + voxelSeconds, H100_RATE, 'H100')", estimates)
+
+    def test_asset_volume_reload_waits_for_comfyui_and_only_runs_for_new_models(self):
+        executor = (ROOT / "modal" / "goose_studio_executor.py").read_text(encoding="utf-8")
+        refresh = executor.split("def _prepare_assets_for_generation(", 1)[1].split(
+            "\ndef _checksum(", 1
+        )[0]
+        self.assertIn("if loaded_generation < target_generation:", refresh)
+        self.assertLess(
+            refresh.index("_stop_comfyui_for_asset_reload()"),
+            refresh.index("assets_volume.reload()"),
+        )
+        self.assertIn("Could not stop ComfyUI before refreshing installed models", executor)
+        stop = executor.split("def _stop_comfyui_for_asset_reload(", 1)[1].split(
+            "\ndef _start_comfyui(", 1
+        )[0]
+        self.assertEqual(stop.count("_is_comfyui_process_running()"), 2)
+        process_job = executor.split("def _process_job(", 1)[1].split("@app.function(", 1)[0]
+        self.assertIn("_prepare_assets_for_generation(assets_generation)", process_job)
+        self.assertNotIn("assets_volume.reload()", process_job)
+        submit = executor.split('    @api.post("/submit")', 1)[1].split(
+            '    @api.post("/cancel")', 1
+        )[0]
+        self.assertIn("assets_generation = int(_installation().get(\"generation\", 0))", submit)
+        self.assertIn("job_id, workflows, output_node_ids, assets_generation, postprocess", submit)
 
     def test_output_credentials_stay_in_authorization_headers(self):
         api = (ROOT / "web" / "src" / "api.ts").read_text(encoding="utf-8")
@@ -497,7 +529,7 @@ class ProjectStructureTest(unittest.TestCase):
             if line.startswith("RUNTIME_VERSION = ")
         )
 
-        self.assertEqual(electron_version, "1.1.10")
+        self.assertEqual(electron_version, "1.1.12")
         self.assertEqual(runtime_version, "v1.3.0")
         self.assertIn(runtime_version, (ROOT / "scripts" / "build-runtime-image.sh").read_text(encoding="utf-8"))
         self.assertIn(

@@ -16,7 +16,8 @@ const TEXT_TO_IMAGE_SECONDS = 61.29
 const IMAGE_EDIT_SECONDS = 120
 // Measured on Modal L40S with image_to_3d.png, 32 steps, guidance 6,
 // num_chunks 16000, and the RepairLongEdgeOutliers node enabled: 198.04s
-// inside ComfyUI plus the observed ~40s cold startup.
+// inside ComfyUI plus the observed ~40s cold startup. H100 timing has not yet
+// been measured, so keep the measured duration as a conservative estimate.
 const IMAGE_TO_3D_SECONDS = 238.04
 // Initial Trellis 2 estimate until the new workflow has a Modal benchmark.
 // It is intentionally conservative because Trellis 2 runs several shape,
@@ -26,7 +27,7 @@ const LITE_UPSCALE_SECONDS = 30
 // Standalone CPU voxelizer measurements for 3d_to_voxel.glb. The first value
 // includes Modal's cold function overhead; use a piecewise fit between the
 // measured 64/128/256 resolution points. The image-to-3D post-process runs in
-// the already-running L40S worker, so it uses the converter-only timings.
+// the already-running GPU worker, so it uses the converter-only timings.
 const VOXELIZE_MEASUREMENTS = [
   [64, 23.05],
   [128, 23.23],
@@ -122,13 +123,13 @@ export function estimateWorkflow(workflow: WorkflowKind, options: EstimateOption
       const voxelSeconds = options.voxelize
         ? voxelizePostprocessSeconds(options.voxelResolution ?? 128)
         : 0
-      return estimate(IMAGE_TO_3D_SECONDS + voxelSeconds, L40S_RATE, 'L40S')
+      return estimate(IMAGE_TO_3D_SECONDS + voxelSeconds, H100_RATE, 'H100')
     }
     case 'image-to-3d-v2': {
       const voxelSeconds = options.voxelize
         ? voxelizePostprocessSeconds(options.voxelResolution ?? 128)
         : 0
-      return estimate(IMAGE_TO_3D_V2_SECONDS + voxelSeconds, L40S_RATE, 'L40S')
+      return estimate(IMAGE_TO_3D_V2_SECONDS + voxelSeconds, H100_RATE, 'H100')
     }
     case 'voxelize':
       return estimate(voxelizeSeconds(options.voxelResolution ?? 128), CPU_CORE_RATE * VOXEL_CPU_CORES, '2 CPU cores')

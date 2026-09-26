@@ -157,6 +157,28 @@ def _is_comfyui_running() -> bool:
         return False
 
 
+def _is_comfyui_process_running() -> bool:
+    process_path = str(COMFYUI_ROOT / "main.py")
+    for command_line in Path("/proc").glob("[0-9]*/cmdline"):
+        try:
+            if process_path in command_line.read_bytes().decode("utf-8", errors="replace"):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _stop_comfyui_for_asset_reload() -> None:
+    if not _is_comfyui_process_running():
+        return
+    subprocess.run(["pkill", "-f", str(COMFYUI_ROOT / "main.py")], check=False)
+    for _ in range(30):
+        if not _is_comfyui_process_running():
+            return
+        time.sleep(1)
+    raise RuntimeError("Could not stop ComfyUI before refreshing installed models")
+
+
 def _start_comfyui() -> None:
     if _is_comfyui_running():
         return
@@ -178,6 +200,30 @@ def _installation() -> dict:
         return json.loads((ASSETS_ROOT / "installation.json").read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         return {"generation": 0, "installed_workflows": []}
+
+
+def _prepare_assets_for_generation(target_generation: int) -> int:
+    """Refresh mounted model assets only after ComfyUI has closed its model files."""
+    global _COMFY_GENERATION
+
+    mounted_generation = int(_installation().get("generation", 0))
+    loaded_generation = _COMFY_GENERATION
+    if loaded_generation is None:
+        # A new Modal container starts on the latest committed Volume snapshot.
+        loaded_generation = mounted_generation
+
+    if loaded_generation < target_generation:
+        _stop_comfyui_for_asset_reload()
+        assets_volume.reload()
+        mounted_generation = int(_installation().get("generation", 0))
+        if mounted_generation < target_generation:
+            raise RuntimeError(
+                "The installed model assets changed while this job was starting. Please retry."
+            )
+        loaded_generation = mounted_generation
+
+    _COMFY_GENERATION = loaded_generation
+    return loaded_generation
 
 
 def _checksum(path: Path) -> str:
@@ -599,20 +645,12 @@ def _process_job(
     job_id: str,
     workflows: list[dict],
     output_node_ids: list[str],
+    assets_generation: int,
     postprocess: dict | None = None,
 ) -> None:
-    global _COMFY_GENERATION
     try:
         io_volume.reload()
-        assets_volume.reload()
-        generation = int(_installation().get("generation", 0))
-        if _COMFY_GENERATION is not None and generation != _COMFY_GENERATION and _is_comfyui_running():
-            subprocess.run(["pkill", "-f", str(COMFYUI_ROOT / "main.py")], check=False)
-            for _ in range(30):
-                if not _is_comfyui_running():
-                    break
-                time.sleep(1)
-        _COMFY_GENERATION = generation
+        _prepare_assets_for_generation(assets_generation)
         _setup_comfyui_paths()
         _start_comfyui()
         outputs = []
@@ -669,9 +707,28 @@ def process_image_job(
     job_id: str,
     workflows: list[dict],
     output_node_ids: list[str],
+    assets_generation: int,
     postprocess: dict | None = None,
 ) -> None:
-    _process_job(job_id, workflows, output_node_ids, postprocess)
+    _process_job(job_id, workflows, output_node_ids, assets_generation, postprocess)
+
+
+@app.function(
+    image=worker_image,
+    gpu=VIDEO_GPU_TYPE,
+    timeout=7200,
+    max_containers=1,
+    scaledown_window=60,
+    volumes={str(ASSETS_ROOT): assets_volume, str(IO_ROOT): io_volume},
+)
+def process_image_to_3d_job(
+    job_id: str,
+    workflows: list[dict],
+    output_node_ids: list[str],
+    assets_generation: int,
+    postprocess: dict | None = None,
+) -> None:
+    _process_job(job_id, workflows, output_node_ids, assets_generation, postprocess)
 
 
 @app.function(
@@ -686,9 +743,10 @@ def process_video_job(
     job_id: str,
     workflows: list[dict],
     output_node_ids: list[str],
+    assets_generation: int,
     postprocess: dict | None = None,
 ) -> None:
-    _process_job(job_id, workflows, output_node_ids, postprocess)
+    _process_job(job_id, workflows, output_node_ids, assets_generation, postprocess)
 
 
 @app.function(
@@ -833,9 +891,9 @@ def _api():
             postprocess = _validate_postprocess(payload.get("postprocess"))
         except (ValueError, TypeError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if workload not in {"image", "video"}:
-            raise HTTPException(status_code=400, detail="workload must be image or video")
-        if postprocess and workload != "image":
+        if not isinstance(workload, str) or workload not in {"image", "image-to-3d", "video"}:
+            raise HTTPException(status_code=400, detail="workload must be image, image-to-3d, or video")
+        if postprocess and workload == "video":
             raise HTTPException(status_code=400, detail="Voxelization is available for image jobs only")
         job = _job_dir(job_id)
         if not isinstance(workflows, list) or not workflows or not all(isinstance(item, dict) for item in workflows):
@@ -874,14 +932,22 @@ def _api():
                 status_code=400,
                 detail=f"Output nodes are missing from workflow: {', '.join(missing_outputs)}",
             )
+        assets_volume.reload()
+        assets_generation = int(_installation().get("generation", 0))
         _atomic_json(job / "workflow.json", {"workflows": workflows, "postprocess": postprocess})
         _save_status(
             job_id,
             {"job_id": job_id, "status": "queued", "outputs": [], "updated_at": _now()},
         )
         io_volume.commit()
-        process_function = process_image_job if workload == "image" else process_video_job
-        call = process_function.spawn(job_id, workflows, output_node_ids, postprocess)
+        process_function = {
+            "image": process_image_job,
+            "image-to-3d": process_image_to_3d_job,
+            "video": process_video_job,
+        }[workload]
+        call = process_function.spawn(
+            job_id, workflows, output_node_ids, assets_generation, postprocess
+        )
         _atomic_json(job / "call.json", {"call_id": call.object_id})
         io_volume.commit()
         return {"job_id": job_id, "status": "queued"}

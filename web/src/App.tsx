@@ -9,7 +9,7 @@ import SettingsMenu from './components/SettingsMenu.tsx'
 import WorkflowInstallDialog from './components/WorkflowInstallDialog.tsx'
 import { appendAppLog, downloadOutputToDisk, forgetSavedModalCredentials, getRuntimeConfig, releaseModelPreview } from './desktop.ts'
 import { estimateWorkflow, formatCreditEstimate, type WorkflowEstimate } from './estimates.ts'
-import type { Job, JobState, ModalModelPreview, OutputFile, RuntimeConfig, VoxelizationOptions, WorkflowInstallStatus, WorkflowKind } from './types.ts'
+import type { Job, JobState, ModalModelPreview, OutputFile, RuntimeConfig, VoxelizationOptions, WorkflowInstallStatus, WorkflowKind, WorkloadKind } from './types.ts'
 import { characterSwap, imageEdit, imageTo3d, imageTo3dV2, liteUpscale, outputNodes, textToImage, tryOn } from './workflows.ts'
 
 const workflows = [
@@ -31,6 +31,12 @@ const HISTORY_PAGE_SIZE = 12
 
 function workflowReady(workflow: WorkflowKind, installed: WorkflowKind[]) {
   return builtInWorkflows.has(workflow) || installed.includes(workflow)
+}
+
+function workloadForWorkflow(workflow: WorkflowKind): WorkloadKind {
+  if (workflow === 'character-swap') return 'video'
+  if (workflow === 'image-to-3d' || workflow === 'image-to-3d-v2') return 'image-to-3d'
+  return 'image'
 }
 
 function savedJobs(): Job[] {
@@ -204,7 +210,7 @@ export default function App() {
       }
       updateCurrentWorkflowRun(workflow, jobId, { state: 'preparing', message: 'Preparing the ComfyUI workflow' })
       const prepared = await build(names, jobId)
-      await submitJob(config, jobId, prepared as never, outputNodes[workflow], workflow === 'character-swap' ? 'video' : 'image', options.postprocess)
+      await submitJob(config, jobId, prepared as never, outputNodes[workflow], workloadForWorkflow(workflow), options.postprocess)
       appendAppLog(`Submitted ${workflow} job ${jobId}`)
       updateCurrentWorkflowRun(workflow, jobId, { job: { job_id: jobId, status: 'queued', outputs: [] }, state: 'queued', message: 'Waiting for a GPU' })
       poll(jobId, workflow)
