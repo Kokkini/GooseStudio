@@ -29,6 +29,11 @@ export interface VolumeDownloadRequest {
   filename: string
 }
 
+export interface ModalModelPreview {
+  previewId: string | null
+  src: string
+}
+
 export interface SetupStatus {
   state: 'idle' | 'running' | 'completed' | 'failed'
   lines: string[]

@@ -1,4 +1,4 @@
-import type { ModalCredentials, ModalSetupMode, OutputFile, RuntimeConfig, SetupStatus, VolumeDownloadRequest } from './types.ts'
+import type { ModalCredentials, ModalModelPreview, ModalSetupMode, OutputFile, RuntimeConfig, SetupStatus, VolumeDownloadRequest } from './types.ts'
 import { downloadOutput } from './api.ts'
 
 export async function getRuntimeConfig(): Promise<RuntimeConfig> {
@@ -47,8 +47,19 @@ export async function downloadOutputToDisk(config: RuntimeConfig, jobId: string,
   anchor.href = objectUrl
   anchor.download = output.filename
   anchor.click()
+  if (output.filename.toLowerCase().endsWith('.glb')) {
+    return { canceled: false, preview: { previewId: null, src: objectUrl } }
+  }
   window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
   return { canceled: false }
+}
+
+export async function releaseModelPreview(preview: ModalModelPreview) {
+  if (preview.previewId && window.gooseStudio) {
+    await window.gooseStudio.releaseModelPreview(preview.previewId)
+    return
+  }
+  if (preview.src.startsWith('blob:')) URL.revokeObjectURL(preview.src)
 }
 
 export async function forgetSavedModalCredentials() {

@@ -1,15 +1,15 @@
 import { ArrowRight, Box, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock3, CloudCog, Download, ExternalLink, FlaskConical, Image, LoaderCircle, RefreshCw, Shirt, Sparkles, Trash2, Video, WandSparkles, X } from 'lucide-react'
 import gooseStudioLogo from './assets/logo-abstract-orbit.svg'
-import { useEffect, useRef, useState } from 'react'
+import { createElement, useEffect, useRef, useState } from 'react'
 import { cancelJob, checkConnection, deleteJob, downloadOutput, getJob, getWorkflowCapabilities, installWorkflow, submitJob, submitVoxelizationJob, uploadInputs } from './api.ts'
 import FileDrop from './components/FileDrop.tsx'
 import AppLogDialog from './components/AppLogDialog.tsx'
 import SetupDialog from './components/SetupDialog.tsx'
 import SettingsMenu from './components/SettingsMenu.tsx'
 import WorkflowInstallDialog from './components/WorkflowInstallDialog.tsx'
-import { appendAppLog, downloadOutputToDisk, forgetSavedModalCredentials, getRuntimeConfig } from './desktop.ts'
+import { appendAppLog, downloadOutputToDisk, forgetSavedModalCredentials, getRuntimeConfig, releaseModelPreview } from './desktop.ts'
 import { estimateWorkflow, formatCreditEstimate, type WorkflowEstimate } from './estimates.ts'
-import type { Job, JobState, OutputFile, RuntimeConfig, VoxelizationOptions, WorkflowInstallStatus, WorkflowKind } from './types.ts'
+import type { Job, JobState, ModalModelPreview, OutputFile, RuntimeConfig, VoxelizationOptions, WorkflowInstallStatus, WorkflowKind } from './types.ts'
 import { characterSwap, imageEdit, imageTo3d, imageTo3dV2, liteUpscale, outputNodes, textToImage, tryOn } from './workflows.ts'
 
 const workflows = [
@@ -273,14 +273,12 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand"><span className="brand-mark"><img src={gooseStudioLogo} alt="" /></span><div><strong>Goose Studio</strong><small>Powered by your Modal credits</small></div></div>
-        <div className="connection-state"><span className={connected ? 'online' : ''} />{connected ? 'Modal connected' : 'Setup required'}{!connected && <button className="setup-modal-button" onClick={() => { setSetupMode('setup'); setSetupOpen(true) }}><CloudCog size={16} /> Setup Modal</button>}<SettingsMenu open={settingsOpen} usageUrl={modalUsageUrl(config)} hasSavedModalCredentials={Boolean(config.hasSavedModalCredentials)} onToggle={() => setSettingsOpen((current) => !current)} onClose={() => setSettingsOpen(false)} onViewLog={() => setLogOpen(true)} onUpdateApp={updateCloudApp} onSwitchAccount={switchModalAccount} onForgetModalAccess={() => void forgetModalAccess()} /></div>
+        <div className="connection-state"><span className={connected ? 'online' : ''} />{connected ? 'Modal connected' : 'Setup required'}{connected && <a className="modal-credit-link" href={modalUsageUrl(config)} target="_blank" rel="noreferrer" aria-label="View Modal credit balance" title="View Modal credit balance">Modal credits <ExternalLink size={13} /></a>}{!connected && <button className="setup-modal-button" onClick={() => { setSetupMode('setup'); setSetupOpen(true) }}><CloudCog size={16} /> Setup Modal</button>}<SettingsMenu open={settingsOpen} usageUrl={modalUsageUrl(config)} hasSavedModalCredentials={Boolean(config.hasSavedModalCredentials)} onToggle={() => setSettingsOpen((current) => !current)} onClose={() => setSettingsOpen(false)} onViewLog={() => setLogOpen(true)} onUpdateApp={updateCloudApp} onSwitchAccount={switchModalAccount} onForgetModalAccess={() => void forgetModalAccess()} /></div>
       </header>
 
       <main>
-        <section className="hero">
-          <p className="eyebrow">Private AI studio</p>
-          <h1>Create product content<br /><em>without a subscription.</em></h1>
-          <p>Your files go straight to your own Modal workspace. Pick a tool and start creating.</p>
+        <section className="workspace-heading">
+          <h1>Workflows</h1>
         </section>
 
         <section className="tool-picker">
@@ -471,23 +469,36 @@ function isModelOutput(output: OutputFile) { return output.content_type.startsWi
 
 function isVoxelPackage(output: OutputFile) { return output.filename.toLowerCase().endsWith('.zip') }
 
+function isGlbOutput(output: OutputFile) { return output.filename.toLowerCase().endsWith('.glb') }
+
 function OutputMedia({ output, jobId, config }: { output: OutputFile; jobId: string; config: RuntimeConfig }) {
   const imageOutput = isImageOutput(output)
   const isModel = isModelOutput(output)
   const { source, error } = useOutputSource(config, jobId, output.id, !isModel)
   const [downloading, setDownloading] = useState(false)
   const [downloadError, setDownloadError] = useState('')
+  const [modelPreview, setModelPreview] = useState<ModalModelPreview | null>(null)
+  const previewable = isGlbOutput(output)
+  useEffect(() => () => {
+    if (modelPreview) void releaseModelPreview(modelPreview)
+  }, [modelPreview])
   const download = async () => {
     if (downloading) return
     setDownloading(true)
     setDownloadError('')
-    try { await downloadOutputToDisk(config, jobId, output) }
+    try {
+      if (previewable) await import('@google/model-viewer')
+      const result = await downloadOutputToDisk(config, jobId, output)
+      if (result.canceled) return
+      if (result.preview) setModelPreview(result.preview)
+    }
     catch (reason) { setDownloadError((reason as Error).message) }
     finally { setDownloading(false) }
   }
   const readyLabel = isModel ? (isVoxelPackage(output) ? '3D package ready' : '3D model ready') : 'Video ready'
   return <div className="output-media">
-    {source ? (imageOutput ? <img src={source} alt="Generated output" /> : isModel ? <div className="model-output"><Box /><strong>{readyLabel}</strong><small>{output.filename}</small></div> : <video src={source} controls />)
+    {modelPreview ? createElement('model-viewer', { className: 'model-output-viewer', src: modelPreview.src, alt: `3D preview of ${output.filename}`, 'camera-controls': true, 'auto-rotate': true, 'touch-action': 'pan-y', 'shadow-intensity': '1' })
+      : source ? (imageOutput ? <img src={source} alt="Generated output" /> : isModel ? <div className="model-output"><Box /><strong>{readyLabel}</strong><small>{output.filename}</small></div> : <video src={source} controls />)
       : isModel ? <div className="model-output"><Box /><strong>{readyLabel}</strong><small>{output.filename}</small></div>
         : <div className="result-placeholder">{error ? <CircleAlert className="error-icon" /> : <LoaderCircle className="spin" />}<small>{error || 'Loading output...'}</small></div>}
     <div className="output-download-area"><button type="button" onClick={() => void download()} disabled={downloading}><Download size={16} /> {downloading ? 'Downloading from Modal…' : 'Download'}</button>{downloadError && <small role="alert">{downloadError}</small>}</div>

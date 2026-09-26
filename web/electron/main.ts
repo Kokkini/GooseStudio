@@ -1,8 +1,15 @@
 import { spawn } from 'node:child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { appendFileSync, createReadStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
-import type { ModalCredentials, ModalSetupMode, VolumeDownloadRequest } from '../src/types.ts'
+import { Readable } from 'node:stream'
+import { app, BrowserWindow, dialog, ipcMain, protocol, safeStorage, shell } from 'electron'
+import type { ModalCredentials, ModalModelPreview, ModalSetupMode, VolumeDownloadRequest } from '../src/types.ts'
+
+protocol.registerSchemesAsPrivileged([{
+  scheme: 'goose-model',
+  privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true },
+}])
 
 interface SetupStatus {
   state: 'idle' | 'running' | 'completed' | 'failed'
@@ -15,6 +22,7 @@ interface SetupStatus {
 const developmentRoot = process.env.GOOSE_STUDIO_ROOT || process.env.FREE_VIDEO_GEN_ROOT || path.resolve(process.cwd(), '..')
 let setupStatus: SetupStatus = { state: 'idle', lines: [], returncode: null, progress: null, error: null }
 const sensitiveValues = new Set<string>()
+const modelPreviewFiles = new Map<string, string>()
 
 const APP_LOG_MAX_BYTES = 2 * 1024 * 1024
 const APP_LOG_KEEP_BYTES = 1536 * 1024
@@ -381,29 +389,41 @@ async function downloadModalVolumeOutput(request: VolumeDownloadRequest) {
   if (!readPersistedConfig()?.encryptedModalCredentials) {
     throw new Error('Modal access is not saved on this device. Choose Settings → Update Modal app once to connect it for downloads.')
   }
-  const bundledCli = app.isPackaged
-    ? path.join(process.resourcesPath, 'sidecar', 'modal-cli', 'modal-cli.exe')
-    : path.join(developmentRoot, 'build', 'windows-sidecar', 'modal-cli', 'modal-cli.exe')
-  const command = app.isPackaged || existsSync(bundledCli) ? bundledCli : 'modal'
-  if (app.isPackaged && !existsSync(command)) throw new Error('The bundled Modal download tool is missing. Reinstall Goose Studio.')
+  const command = modalCliPath()
   const dialogOptions = { title: 'Save output from Modal', defaultPath: request.filename }
   const focusedWindow = BrowserWindow.getFocusedWindow()
   const destination = focusedWindow
     ? await dialog.showSaveDialog(focusedWindow, dialogOptions)
     : await dialog.showSaveDialog(dialogOptions)
   if (destination.canceled || !destination.filePath) return { canceled: true }
+  await downloadFromModalVolume(remotePath, destination.filePath, request.jobId, request.filename, command)
+  const preview = request.filename.toLowerCase().endsWith('.glb')
+    ? registerModelPreview(destination.filePath)
+    : undefined
+  return { canceled: false, preview }
+}
+
+function modalCliPath() {
+  const bundledCli = app.isPackaged
+    ? path.join(process.resourcesPath, 'sidecar', 'modal-cli', 'modal-cli.exe')
+    : path.join(developmentRoot, 'build', 'windows-sidecar', 'modal-cli', 'modal-cli.exe')
+  const command = app.isPackaged || existsSync(bundledCli) ? bundledCli : 'modal'
+  if (app.isPackaged && !existsSync(command)) throw new Error('The bundled Modal download tool is missing. Reinstall Goose Studio.')
+  return command
+}
+
+function downloadFromModalVolume(remotePath: string, destinationPath: string, jobId: string, filename: string, command = modalCliPath()) {
   const credentials = readSavedModalCredentials()
   if (!credentials) throw new Error('Saved Modal access could not be decrypted. Use Settings → Update Modal app to reconnect it.')
-
   const tokenId = credentials.tokenId
   const tokenSecret = credentials.tokenSecret
   sensitiveValues.add(tokenId)
   sensitiveValues.add(tokenSecret)
   const environment: NodeJS.ProcessEnv = { ...process.env, MODAL_TOKEN_ID: tokenId, MODAL_TOKEN_SECRET: tokenSecret, MODAL_ENVIRONMENT: runtimeConfig().modalEnvironment || 'main', PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
-  const args = ['volume', 'get', '--force', 'goose-studio-io', remotePath, destination.filePath]
-  appendAppLog(`Downloading Modal output ${request.jobId}/${request.filename}`)
+  const args = ['volume', 'get', '--force', 'goose-studio-io', remotePath, destinationPath]
+  appendAppLog(`Downloading Modal output ${jobId}/${filename}`)
 
-  return await new Promise<{ canceled: false }>((resolve, reject) => {
+  return new Promise<void>((resolve, reject) => {
     let stderr = ''
     let settled = false
     const clearCredentials = () => {
@@ -442,9 +462,9 @@ async function downloadModalVolumeOutput(request: VolumeDownloadRequest) {
       if (settled) return
       settled = true
       if (code === 0) {
-        appendAppLog(`Modal output download completed ${request.jobId}/${request.filename}`)
+        appendAppLog(`Modal output download completed ${jobId}/${filename}`)
         clearCredentials()
-        resolve({ canceled: false })
+        resolve()
       } else {
         const details = redactLog(stderr.trim()).slice(-1200)
         const message = details ? `Modal could not download the file: ${details}` : `Modal download failed (exit code ${code ?? 'unknown'}).`
@@ -454,6 +474,36 @@ async function downloadModalVolumeOutput(request: VolumeDownloadRequest) {
       }
     })
   })
+}
+
+function registerModelPreview(filePath: string): ModalModelPreview {
+  const previewId = randomUUID()
+  modelPreviewFiles.set(previewId, filePath)
+  return { previewId, src: `goose-model://${previewId}/model.glb` }
+}
+
+function releaseModalModelPreview(previewId: string) {
+  if (typeof previewId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(previewId)) return false
+  return modelPreviewFiles.delete(previewId)
+}
+
+function serveModelPreview(urlValue: string) {
+  let url: URL
+  try { url = new URL(urlValue) } catch { return new Response('Not found', { status: 404 }) }
+  const filePath = url.pathname === '/model.glb' ? modelPreviewFiles.get(url.hostname) : undefined
+  if (!filePath) return new Response('Not found', { status: 404 })
+  const stream = Readable.toWeb(createReadStream(filePath)) as ReadableStream
+  return new Response(stream as never, {
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-store',
+      'Content-Type': 'model/gltf-binary',
+    },
+  })
+}
+
+function cleanModelPreviews() {
+  modelPreviewFiles.clear()
 }
 
 function openExternalUrl(value: string) {
@@ -508,9 +558,11 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  protocol.handle('goose-model', (request) => serveModelPreview(request.url))
   ipcMain.handle('desktop:get-config', runtimeConfig)
   ipcMain.handle('desktop:start-setup', (_event, mode: ModalSetupMode, credentials: ModalCredentials | null) => startSetup(mode, credentials))
   ipcMain.handle('desktop:download-modal-output', (_event, request: VolumeDownloadRequest) => downloadModalVolumeOutput(request))
+  ipcMain.handle('desktop:release-model-preview', (_event, previewId: string) => releaseModalModelPreview(previewId))
   ipcMain.handle('desktop:forget-modal-credentials', () => forgetSavedModalCredentials())
   ipcMain.handle('desktop:get-setup-status', () => setupStatus)
   ipcMain.handle('desktop:get-app-log', () => readAppLog())
@@ -524,3 +576,4 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit() })
+app.on('before-quit', cleanModelPreviews)

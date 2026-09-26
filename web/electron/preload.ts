@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('gooseStudio', {
   getConfig: () => ipcRenderer.invoke('desktop:get-config'),
   startSetup: (mode: ModalSetupMode, credentials: ModalCredentials | null) => ipcRenderer.invoke('desktop:start-setup', mode, credentials),
   downloadModalOutput: (request: VolumeDownloadRequest) => ipcRenderer.invoke('desktop:download-modal-output', request),
+  releaseModelPreview: (previewId: string) => ipcRenderer.invoke('desktop:release-model-preview', previewId),
   forgetModalCredentials: () => ipcRenderer.invoke('desktop:forget-modal-credentials'),
   getSetupStatus: () => ipcRenderer.invoke('desktop:get-setup-status'),
   getAppLog: () => ipcRenderer.invoke('desktop:get-app-log'),

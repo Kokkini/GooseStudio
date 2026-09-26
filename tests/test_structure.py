@@ -124,6 +124,13 @@ class ProjectStructureTest(unittest.TestCase):
         self.assertIn("useState<WorkflowKind>('text-to-image')", app)
         self.assertIn("{ id: 'lite-upscale' as const", app)
 
+    def test_start_page_uses_a_neutral_workflow_heading(self):
+        app = (ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
+        self.assertIn("<h1>Workflows</h1>", app)
+        self.assertNotIn("Create product content", app)
+        self.assertNotIn("without a subscription", app)
+        self.assertNotIn("Pick a tool and start creating", app)
+
     def test_initial_connection_check_blocks_main_page(self):
         app = (ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
         styles = (ROOT / "web" / "src" / "styles.css").read_text(encoding="utf-8")
@@ -331,6 +338,18 @@ class ProjectStructureTest(unittest.TestCase):
         self.assertIn("environment.MODAL_ENVIRONMENT = runtimeConfig().modalEnvironment || 'main'", main)
         self.assertIn("['volume', 'get', '--force', 'goose-studio-io', remotePath", main)
         self.assertIn("desktop:download-modal-output", preload)
+        self.assertNotIn("prepare-model-preview", preload)
+        self.assertIn("registerSchemesAsPrivileged", main)
+        self.assertIn("goose-model://${previewId}/model.glb", main)
+        self.assertIn("registerModelPreview(destination.filePath)", main)
+        self.assertIn("downloadFromModalVolume(remotePath, destination.filePath", main)
+        self.assertIn("releaseModalModelPreview", main)
+        app = (ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
+        self.assertIn("camera-controls", app)
+        self.assertIn("if (result.preview) setModelPreview(result.preview)", app)
+        self.assertNotIn("View 3D", app)
+        self.assertNotIn("Close preview", app)
+        self.assertIn("Modal credits", (ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8"))
         self.assertIn("Forget saved Modal access", (ROOT / "web" / "src" / "components" / "SettingsMenu.tsx").read_text(encoding="utf-8"))
 
     def test_setup_failures_are_visible_and_retryable(self):
@@ -478,7 +497,7 @@ class ProjectStructureTest(unittest.TestCase):
             if line.startswith("RUNTIME_VERSION = ")
         )
 
-        self.assertEqual(electron_version, "1.1.7")
+        self.assertEqual(electron_version, "1.1.10")
         self.assertEqual(runtime_version, "v1.3.0")
         self.assertIn(runtime_version, (ROOT / "scripts" / "build-runtime-image.sh").read_text(encoding="utf-8"))
         self.assertIn(
