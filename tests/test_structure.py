@@ -38,10 +38,18 @@ class ProjectStructureTest(unittest.TestCase):
         ):
             self.assertIn(mutation, source)
         self.assertIn("model: ImageTo3dV2Model = 'trellis2'", source)
+        self.assertIn("targetFaceCount = 50_000", source)
+        self.assertIn("workflow['186'].inputs.target_face_count", source)
         app = (ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
         self.assertIn("useState<'trellis2' | 'pixal3d'>('trellis2')", app)
+        self.assertIn("useState(50_000)", app)
+        self.assertIn("function FaceCount", app)
         self.assertIn("Trellis 2", app)
         self.assertIn("Pixal3D", app)
+
+    def test_image_to_3d_v2_template_defaults_to_50000_faces(self):
+        workflow = json.loads((ROOT / "web" / "workflows" / "image-to-3d-v2.json").read_text(encoding="utf-8"))
+        self.assertEqual(workflow["186"]["inputs"]["target_face_count"], 50_000)
 
     def test_image_to_3d_v2_uses_current_unwrap_mesh_padding_limit(self):
         workflow = json.loads((ROOT / "web" / "workflows" / "image-to-3d-v2.json").read_text(encoding="utf-8"))
@@ -529,7 +537,7 @@ class ProjectStructureTest(unittest.TestCase):
             if line.startswith("RUNTIME_VERSION = ")
         )
 
-        self.assertEqual(electron_version, "1.1.12")
+        self.assertEqual(electron_version, "1.1.13")
         self.assertEqual(runtime_version, "v1.3.0")
         self.assertIn(runtime_version, (ROOT / "scripts" / "build-runtime-image.sh").read_text(encoding="utf-8"))
         self.assertIn(

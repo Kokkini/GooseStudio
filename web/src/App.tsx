@@ -353,11 +353,12 @@ function LiteForm({ run, installed, install }: InstallableFormProps) {
 function ImageTo3DForm({ workflow = 'image-to-3d', run, installed, install }: InstallableFormProps & { workflow?: 'image-to-3d' | 'image-to-3d-v2' }) {
   const [file, setFile] = useState<File | null>(null)
   const [model, setModel] = useState<'trellis2' | 'pixal3d'>('trellis2')
+  const [targetFaceCount, setTargetFaceCount] = useState(50_000)
   const [voxelize, setVoxelize] = useState(false)
   const [resolution, setResolution] = useState(128)
-  const submit = () => { if (!file) return; run(workflow, [file], (names, id) => (workflow === 'image-to-3d-v2' ? imageTo3dV2(names[0], id, model) : imageTo3d(names[0], id)) as never, submit, voxelize ? { postprocess: { type: 'voxelize', resolution } } : undefined) }
+  const submit = () => { if (!file) return; run(workflow, [file], (names, id) => (workflow === 'image-to-3d-v2' ? imageTo3dV2(names[0], id, model, targetFaceCount) : imageTo3d(names[0], id)) as never, submit, voxelize ? { postprocess: { type: 'voxelize', resolution } } : undefined) }
   const estimate = file ? estimateWorkflow(workflow, { voxelize, voxelResolution: resolution }) : null
-  return <div className="workflow-form"><div className="lite-callout"><Box /><div><strong>{workflow === 'image-to-3d-v2' ? 'Detailed 3D model' : 'Textured 3D model'}</strong><small>Upload one clear image and Goose Studio will create a downloadable 3D model.</small></div></div><FileDrop label="Image to turn into 3D" hint="A clear product image works best" accept="image/*" file={file} onChange={setFile} />{workflow === 'image-to-3d-v2' && <ModelSwitch model={model} setModel={setModel} />}<Toggle label="Also create a voxel model" checked={voxelize} setChecked={setVoxelize} />{voxelize && <VoxelResolution value={resolution} setValue={setResolution} />}<WorkflowButton installed={installed} disabled={!file} install={install} generate={submit} estimate={estimate}><Box /> Create 3D model</WorkflowButton></div>
+  return <div className="workflow-form"><div className="lite-callout"><Box /><div><strong>{workflow === 'image-to-3d-v2' ? 'Detailed 3D model' : 'Textured 3D model'}</strong><small>Upload one clear image and Goose Studio will create a downloadable 3D model.</small></div></div><FileDrop label="Image to turn into 3D" hint="A clear product image works best" accept="image/*" file={file} onChange={setFile} />{workflow === 'image-to-3d-v2' && <><ModelSwitch model={model} setModel={setModel} /><FaceCount value={targetFaceCount} setValue={setTargetFaceCount} /></>}<Toggle label="Also create a voxel model" checked={voxelize} setChecked={setVoxelize} />{voxelize && <VoxelResolution value={resolution} setValue={setResolution} />}<WorkflowButton installed={installed} disabled={!file} install={install} generate={submit} estimate={estimate}><Box /> Create 3D model</WorkflowButton></div>
 }
 
 function VoxelizeForm({ run }: { run: VoxelizeRun }) {
@@ -374,6 +375,14 @@ function VoxelResolution({ value, setValue }: { value: number; setValue: (value:
     if (Number.isFinite(parsed)) setValue(Math.max(1, Math.min(256, Math.round(parsed))))
   }
   return <label className="voxel-resolution"><span><strong>Voxel resolution</strong><small>Longest side of the object</small></span><input className="voxel-resolution-number" type="number" min="1" max="256" step="1" value={value} onChange={(event) => update(event.target.value)} aria-label="Voxel resolution" /><input type="range" min="1" max="256" value={value} onChange={(event) => update(event.target.value)} aria-label="Voxel resolution slider" /></label>
+}
+
+function FaceCount({ value, setValue }: { value: number; setValue: (value: number) => void }) {
+  const update = (raw: string) => {
+    const parsed = Number(raw)
+    if (Number.isFinite(parsed)) setValue(Math.max(1, Math.min(50_000_000, Math.round(parsed))))
+  }
+  return <label className="voxel-resolution face-count"><span><strong>Target face count</strong><small>Lower values make a lighter model; higher values keep more detail.</small></span><input className="voxel-resolution-number" type="number" min="1" max="50000000" step="1000" value={value} onChange={(event) => update(event.target.value)} aria-label="Target face count" /></label>
 }
 
 function TextToImageForm({ run, installed, install }: InstallableFormProps) {

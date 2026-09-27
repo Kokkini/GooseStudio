@@ -84,10 +84,11 @@ export async function imageTo3d(name: string, jobId: string) {
 
 export type ImageTo3dV2Model = 'trellis2' | 'pixal3d'
 
-export async function imageTo3dV2(name: string, jobId: string, model: ImageTo3dV2Model = 'trellis2') {
+export async function imageTo3dV2(name: string, jobId: string, model: ImageTo3dV2Model = 'trellis2', targetFaceCount = 50_000) {
   const workflow = await template('image-to-3d-v2')
   workflow['122'].inputs.image = name
   workflow['316'].inputs.value = model === 'trellis2'
+  workflow['186'].inputs.target_face_count = clamp(Math.round(targetFaceCount), 1, 50_000_000)
   workflow['322'].inputs.filename_prefix = `mesh/${jobId}/${model === 'trellis2' ? 'trellis2' : 'pixal3d'}`
   return [workflow]
 }
