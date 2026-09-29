@@ -84,7 +84,7 @@ export async function imageTo3d(name: string, jobId: string) {
 
 export type ImageTo3dV2Model = 'trellis2' | 'pixal3d'
 
-export async function imageTo3dV2(name: string, jobId: string, model: ImageTo3dV2Model = 'trellis2', targetFaceCount = 50_000) {
+export async function imageTo3dV2(name: string, jobId: string, model: ImageTo3dV2Model = 'trellis2', targetFaceCount = 500_000) {
   const workflow = await template('image-to-3d-v2')
   workflow['122'].inputs.image = name
   workflow['316'].inputs.value = model === 'trellis2'

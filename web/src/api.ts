@@ -55,7 +55,10 @@ export function submitVoxelizationJob(config: RuntimeConfig, jobId: string, inpu
 }
 
 export function getJob(config: RuntimeConfig, jobId: string) {
-  return request<Job>(`${url(config, 'status')}?job_id=${encodeURIComponent(jobId)}`, { headers: authHeaders(config) })
+  return request<Job>(`${url(config, 'status')}?job_id=${encodeURIComponent(jobId)}`, {
+    headers: authHeaders(config),
+    signal: AbortSignal.timeout(20_000),
+  })
 }
 
 export function cancelJob(config: RuntimeConfig, jobId: string) {

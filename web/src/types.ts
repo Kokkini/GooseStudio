@@ -17,6 +17,11 @@ export interface RuntimeConfig {
 
 export type ModalSetupMode = 'setup' | 'update' | 'switch'
 
+export type ModalAppVersionStatus =
+  | { state: 'current'; appVersion: string }
+  | { state: 'update-required'; appVersion: string; deployedVersion?: string }
+  | { state: 'unsupported'; appVersion: string }
+
 export interface ModalCredentials {
   tokenId: string
   tokenSecret: string
@@ -33,6 +38,18 @@ export interface ModalModelPreview {
   previewId: string | null
   src: string
 }
+
+export type AppUpdateCheckResult =
+  | { state: 'available'; currentVersion: string; version: string }
+  | { state: 'up-to-date'; currentVersion: string }
+  | { state: 'unsupported'; currentVersion: string }
+
+export type AppUpdateProgress =
+  | { state: 'downloading'; percent: number; transferred: number; total: number | null }
+  | { state: 'verifying' }
+  | { state: 'installing' }
+  | { state: 'cancelled' }
+  | { state: 'error'; error: string }
 
 export interface SetupStatus {
   state: 'idle' | 'running' | 'completed' | 'failed'

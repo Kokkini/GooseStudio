@@ -38,18 +38,19 @@ class ProjectStructureTest(unittest.TestCase):
         ):
             self.assertIn(mutation, source)
         self.assertIn("model: ImageTo3dV2Model = 'trellis2'", source)
-        self.assertIn("targetFaceCount = 50_000", source)
+        self.assertIn("targetFaceCount = 500_000", source)
         self.assertIn("workflow['186'].inputs.target_face_count", source)
         app = (ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
         self.assertIn("useState<'trellis2' | 'pixal3d'>('trellis2')", app)
-        self.assertIn("useState(50_000)", app)
+        self.assertIn("useState('500000')", app)
         self.assertIn("function FaceCount", app)
+        self.assertIn('type="text" inputMode="numeric"', app)
         self.assertIn("Trellis 2", app)
         self.assertIn("Pixal3D", app)
 
-    def test_image_to_3d_v2_template_defaults_to_50000_faces(self):
+    def test_image_to_3d_v2_template_defaults_to_500000_faces(self):
         workflow = json.loads((ROOT / "web" / "workflows" / "image-to-3d-v2.json").read_text(encoding="utf-8"))
-        self.assertEqual(workflow["186"]["inputs"]["target_face_count"], 50_000)
+        self.assertEqual(workflow["186"]["inputs"]["target_face_count"], 500_000)
 
     def test_image_to_3d_v2_uses_current_unwrap_mesh_padding_limit(self):
         workflow = json.loads((ROOT / "web" / "workflows" / "image-to-3d-v2.json").read_text(encoding="utf-8"))
@@ -338,11 +339,53 @@ class ProjectStructureTest(unittest.TestCase):
     def test_workflows_keep_independent_jobs_and_polling(self):
         app = (ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
         self.assertIn("const [runs, setRuns] = useState<ActiveWorkflowRuns>({})", app)
-        self.assertIn("const polling = useRef(new Map<string, number>())", app)
+        self.assertIn("const polling = useRef(new Map<string, () => void>())", app)
         self.assertIn("updateCurrentWorkflowRun(workflow, jobId", app)
         self.assertIn("polling.current.set(jobId", app)
         self.assertIn("onClick={() => setKind(item.id)}", app)
         self.assertNotIn("setJob(null)", app)
+
+    def test_job_status_polling_retries_transient_errors_and_recovers_stale_workers(self):
+        app = (ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
+        api = (ROOT / "web" / "src" / "api.ts").read_text(encoding="utf-8")
+        executor = (ROOT / "modal" / "goose_studio_executor.py").read_text(encoding="utf-8")
+        job_poll = app.split("const poll = (jobId: string", 1)[1].split("const run = async", 1)[0]
+        self.assertIn("consecutiveErrors += 1", job_poll)
+        self.assertIn("Math.min(5000 * (2 ** Math.min(consecutiveErrors - 1, 4)), 60000)", job_poll)
+        self.assertIn("Connection interrupted. Reconnecting to Modal", job_poll)
+        self.assertNotIn("state: 'failed', message: (error as Error).message", job_poll)
+        self.assertIn("AbortSignal.timeout(20_000)", api)
+        self.assertIn("modal.FunctionCall.from_id(call_id).get(timeout=0)", executor)
+        self.assertIn("_reconcile_job_status(job_id, status_data)", executor)
+        self.assertIn("FunctionTimeoutError", executor)
+        self.assertIn("The Modal worker finished without saving a final result", executor)
+
+    def test_electron_checks_and_installs_verified_public_releases(self):
+        app = (ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
+        update_dialog = (ROOT / "web" / "src" / "components" / "AppUpdateDialog.tsx").read_text(encoding="utf-8")
+        settings = (ROOT / "web" / "src" / "components" / "SettingsMenu.tsx").read_text(encoding="utf-8")
+        main = (ROOT / "web" / "electron" / "main.ts").read_text(encoding="utf-8")
+        self.assertIn("Checking for Goose Studio updates on startup", app)
+        self.assertIn("Remind me later", update_dialog)
+        self.assertIn("Download and install", update_dialog)
+        self.assertIn("Check for app updates", settings)
+        self.assertIn("createHash('sha256')", main)
+        self.assertIn("GitHub's SHA-256 installer digest", main)
+        self.assertIn("function installerEnvironment()", main)
+
+    def test_electron_upgrade_redeploys_modal_app_automatically(self):
+        app = (ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
+        setup = (ROOT / "web" / "src" / "components" / "SetupDialog.tsx").read_text(encoding="utf-8")
+        main = (ROOT / "web" / "electron" / "main.ts").read_text(encoding="utf-8")
+        preload = (ROOT / "web" / "electron" / "preload.ts").read_text(encoding="utf-8")
+        self.assertIn("modalAppVersion: app.getVersion()", main)
+        self.assertIn("deployedVersion === appVersion", main)
+        self.assertIn("desktop:check-modal-app-version", main)
+        self.assertIn("checkModalAppVersion()", app)
+        self.assertIn("setSetupMode('update')", app)
+        self.assertIn("autoStart={setupAutoStart}", app)
+        self.assertIn("startModalSetup('update', null)", setup)
+        self.assertIn("checkModalAppVersion: () => ipcRenderer.invoke('desktop:check-modal-app-version')", preload)
 
     def test_character_swap_preserves_held_object_by_default(self):
         app = (ROOT / "web" / "src" / "App.tsx").read_text(encoding="utf-8")
@@ -537,7 +580,7 @@ class ProjectStructureTest(unittest.TestCase):
             if line.startswith("RUNTIME_VERSION = ")
         )
 
-        self.assertEqual(electron_version, "1.1.13")
+        self.assertEqual(electron_version, "1.1.14")
         self.assertEqual(runtime_version, "v1.3.0")
         self.assertIn(runtime_version, (ROOT / "scripts" / "build-runtime-image.sh").read_text(encoding="utf-8"))
         self.assertIn(

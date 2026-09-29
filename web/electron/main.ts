@@ -1,10 +1,11 @@
 import { spawn } from 'node:child_process'
-import { appendFileSync, createReadStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { appendFileSync, createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createHash, randomUUID } from 'node:crypto'
 import path from 'node:path'
-import { Readable } from 'node:stream'
-import { app, BrowserWindow, dialog, ipcMain, protocol, safeStorage, shell } from 'electron'
-import type { ModalCredentials, ModalModelPreview, ModalSetupMode, VolumeDownloadRequest } from '../src/types.ts'
+import { Readable, Transform } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
+import { app, BrowserWindow, dialog, ipcMain, net, protocol, safeStorage, shell } from 'electron'
+import type { AppUpdateCheckResult, AppUpdateProgress, ModalAppVersionStatus, ModalCredentials, ModalModelPreview, ModalSetupMode, VolumeDownloadRequest } from '../src/types.ts'
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'goose-model',
@@ -26,6 +27,8 @@ const modelPreviewFiles = new Map<string, string>()
 
 const APP_LOG_MAX_BYTES = 2 * 1024 * 1024
 const APP_LOG_KEEP_BYTES = 1536 * 1024
+const RELEASE_API_URL = 'https://api.github.com/repos/Kokkini/GooseStudio/releases/latest'
+let appUpdateDownloadController: AbortController | null = null
 
 function configPath() {
   return path.join(app.getPath('userData'), 'runtime-config.json')
@@ -80,6 +83,7 @@ function readPersistedConfig() {
       encryptedModalCredentials?: string
       modalWorkspace?: string
       modalEnvironment?: string
+      modalAppVersion?: string
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.error('Could not read runtime configuration:', (error as Error).message)
@@ -147,6 +151,7 @@ function saveSecureConfig(
       : existing?.encryptedModalCredentials,
     modalWorkspace: config.modalWorkspace,
     modalEnvironment: config.modalEnvironment,
+    modalAppVersion: app.getVersion(),
   }), { encoding: 'utf8', mode: 0o600 })
   renameSync(temporary, destination)
   return Boolean(credentials || existing?.encryptedModalCredentials)
@@ -186,6 +191,16 @@ function runtimeConfig() {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
   }
   return config
+}
+
+function checkModalAppVersion(): ModalAppVersionStatus {
+  const appVersion = app.getVersion()
+  if (!app.isPackaged || process.platform !== 'win32') return { state: 'unsupported', appVersion }
+  const stored = readPersistedConfig()
+  if (!stored?.baseUrl || !stored.encryptedApiKey) return { state: 'current', appVersion }
+  const deployedVersion = stored.modalAppVersion
+  if (deployedVersion === appVersion) return { state: 'current', appVersion }
+  return { state: 'update-required', appVersion, deployedVersion }
 }
 
 function appendSetupLine(line: string) {
@@ -527,6 +542,200 @@ function openExternalUrl(value: string) {
   void shell.openExternal(url.toString()).catch((error) => console.error('Could not open external URL:', error.message))
 }
 
+interface GitHubReleaseAsset {
+  name?: unknown
+  browser_download_url?: unknown
+  digest?: unknown
+  size?: unknown
+}
+
+interface GitHubRelease {
+  tag_name?: unknown
+  draft?: unknown
+  prerelease?: unknown
+  assets?: unknown
+}
+
+interface DownloadableRelease {
+  version: string
+  filename: string
+  downloadUrl: string
+  sha256: string
+  size: number | null
+}
+
+function parseReleaseVersion(value: string) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(value.trim())
+  if (!match) return null
+  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]), prerelease: match[4] || '' }
+}
+
+function compareReleaseVersions(left: string, right: string) {
+  const a = parseReleaseVersion(left)
+  const b = parseReleaseVersion(right)
+  if (!a || !b) throw new Error('The app or release has an invalid version number.')
+  for (const key of ['major', 'minor', 'patch'] as const) {
+    if (a[key] !== b[key]) return a[key] > b[key] ? 1 : -1
+  }
+  if (a.prerelease === b.prerelease) return 0
+  if (!a.prerelease) return 1
+  if (!b.prerelease) return -1
+  return a.prerelease.localeCompare(b.prerelease, undefined, { numeric: true })
+}
+
+async function getLatestReleaseUpdate(): Promise<{ result: AppUpdateCheckResult; release: DownloadableRelease | null }> {
+  const currentVersion = app.getVersion()
+  if (!app.isPackaged || process.platform !== 'win32') {
+    return { result: { state: 'unsupported', currentVersion }, release: null }
+  }
+
+  const response = await net.fetch(RELEASE_API_URL, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': `Goose-Studio/${currentVersion}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+    signal: AbortSignal.timeout(15000),
+  })
+  if (!response.ok) throw new Error(`GitHub update check failed (${response.status}).`)
+  const payload = await response.json() as GitHubRelease
+  const tag = typeof payload.tag_name === 'string' ? payload.tag_name : ''
+  const version = tag.replace(/^v/i, '')
+  if (!parseReleaseVersion(version) || payload.draft || payload.prerelease) {
+    throw new Error('GitHub returned an invalid or non-stable Goose Studio release.')
+  }
+  if (compareReleaseVersions(version, currentVersion) <= 0) {
+    return { result: { state: 'up-to-date', currentVersion }, release: null }
+  }
+
+  const filename = `Goose-Studio-Setup-${version}.exe`
+  const assets = Array.isArray(payload.assets) ? payload.assets as GitHubReleaseAsset[] : []
+  const asset = assets.find((candidate) => candidate.name === filename)
+  if (!asset || typeof asset.browser_download_url !== 'string') {
+    throw new Error(`Release ${tag} does not include the Windows installer ${filename}.`)
+  }
+  const downloadUrl = new URL(asset.browser_download_url)
+  if (downloadUrl.protocol !== 'https:' || downloadUrl.hostname !== 'github.com') {
+    throw new Error('GitHub returned an unsafe installer download location.')
+  }
+  const digest = typeof asset.digest === 'string' ? /^sha256:([0-9a-f]{64})$/i.exec(asset.digest) : null
+  if (!digest) throw new Error(`Release ${tag} is missing GitHub's SHA-256 installer digest.`)
+  const size = typeof asset.size === 'number' && Number.isFinite(asset.size) ? asset.size : null
+  return {
+    result: { state: 'available', currentVersion, version },
+    release: { version, filename, downloadUrl: downloadUrl.toString(), sha256: digest[1].toLowerCase(), size },
+  }
+}
+
+function sendAppUpdateProgress(progress: AppUpdateProgress) {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+      window.webContents.send('desktop:app-update-progress', progress)
+    }
+  }
+}
+
+function installerEnvironment(): NodeJS.ProcessEnv {
+  const allowed = [
+    'PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA',
+    'APPDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'HOMEDRIVE', 'HOMEPATH', 'COMSPEC',
+  ]
+  const environment: NodeJS.ProcessEnv = {}
+  for (const name of allowed) {
+    const value = process.env[name]
+    if (value) environment[name] = value
+  }
+  return environment
+}
+
+async function downloadAndInstallAppUpdate() {
+  if (appUpdateDownloadController) throw new Error('An app update is already downloading.')
+  const { result, release } = await getLatestReleaseUpdate()
+  if (result.state !== 'available' || !release) throw new Error('There is no newer Goose Studio version to install.')
+
+  const controller = new AbortController()
+  appUpdateDownloadController = controller
+  const timeout = setTimeout(() => controller.abort(new Error('The update download timed out.')), 30 * 60 * 1000)
+  timeout.unref()
+  const partialPath = path.join(app.getPath('temp'), `goose-studio-update-${release.version}-${randomUUID()}.exe.part`)
+  const installerPath = partialPath.slice(0, -'.part'.length)
+  let launched = false
+  try {
+    appendAppLog(`Downloading Goose Studio update ${release.version}`)
+    sendAppUpdateProgress({ state: 'downloading', percent: 0, transferred: 0, total: release.size })
+    const response = await net.fetch(release.downloadUrl, {
+      headers: { Accept: 'application/octet-stream', 'User-Agent': `Goose-Studio/${app.getVersion()}` },
+      signal: controller.signal,
+    })
+    if (!response.ok || !response.body) throw new Error(`Installer download failed (${response.status}).`)
+
+    const contentLength = Number(response.headers.get('content-length'))
+    const total = Number.isFinite(contentLength) && contentLength > 0 ? contentLength : release.size
+    const hash = createHash('sha256')
+    let transferred = 0
+    let lastProgressAt = 0
+    const progressStream = new Transform({
+      transform(chunk: Buffer, _encoding, callback) {
+        transferred += chunk.length
+        hash.update(chunk)
+        const now = Date.now()
+        if (now - lastProgressAt >= 200) {
+          const percent = total ? Math.min(100, Math.floor(transferred / total * 100)) : 0
+          sendAppUpdateProgress({ state: 'downloading', percent, transferred, total })
+          lastProgressAt = now
+        }
+        callback(null, chunk)
+      },
+    })
+    const downloadStream = Readable.fromWeb(response.body as unknown as import('node:stream/web').ReadableStream<Uint8Array>)
+    await pipeline(downloadStream, progressStream, createWriteStream(partialPath, { flags: 'wx' }))
+    if (transferred === 0) throw new Error('GitHub returned an empty installer file.')
+
+    sendAppUpdateProgress({ state: 'verifying' })
+    if (hash.digest('hex') !== release.sha256) throw new Error('The installer failed its GitHub SHA-256 integrity check.')
+    renameSync(partialPath, installerPath)
+
+    sendAppUpdateProgress({ state: 'installing' })
+    appendAppLog(`Starting Goose Studio installer ${release.version}`)
+    const installer = spawn(installerPath, [], {
+      detached: true,
+      env: installerEnvironment(),
+      shell: false,
+      stdio: 'ignore',
+      windowsHide: false,
+    })
+    await new Promise<void>((resolve, reject) => {
+      installer.once('error', reject)
+      installer.once('spawn', () => resolve())
+    })
+    installer.unref()
+    launched = true
+    setTimeout(() => app.quit(), 500).unref()
+  } catch (error) {
+    try { unlinkSync(partialPath) } catch { /* Partial update file may not exist. */ }
+    if (!launched) {
+      try { unlinkSync(installerPath) } catch { /* Installer file may not have been created. */ }
+    }
+    const abortReason = controller.signal.reason
+    const cancelled = controller.signal.aborted && (!(abortReason instanceof Error) || abortReason.name === 'AbortError')
+    const message = cancelled
+      ? 'Update download cancelled.'
+      : controller.signal.aborted && abortReason instanceof Error
+        ? abortReason.message
+        : (error as Error).message || 'Could not download or start the Goose Studio update.'
+    sendAppUpdateProgress(cancelled ? { state: 'cancelled' } : { state: 'error', error: message })
+    appendAppLog(`Goose Studio update failed: ${message}`)
+    throw new Error(message)
+  } finally {
+    clearTimeout(timeout)
+    if (appUpdateDownloadController === controller) appUpdateDownloadController = null
+  }
+}
+
+function cancelAppUpdateDownload() {
+  appUpdateDownloadController?.abort()
+}
+
 function createWindow() {
   const window = new BrowserWindow({
     width: 1360,
@@ -560,6 +769,22 @@ function createWindow() {
 app.whenReady().then(() => {
   protocol.handle('goose-model', (request) => serveModelPreview(request.url))
   ipcMain.handle('desktop:get-config', runtimeConfig)
+  ipcMain.handle('desktop:check-modal-app-version', checkModalAppVersion)
+  ipcMain.handle('desktop:check-app-update', async (): Promise<AppUpdateCheckResult> => {
+    appendAppLog('Checking for Goose Studio app updates')
+    try {
+      const { result } = await getLatestReleaseUpdate()
+      appendAppLog(result.state === 'available'
+        ? `Goose Studio update available: ${result.version}`
+        : `Goose Studio is up to date (${result.currentVersion})`)
+      return result
+    } catch (error) {
+      appendAppLog(`Goose Studio update check failed: ${(error as Error).message}`)
+      throw error
+    }
+  })
+  ipcMain.handle('desktop:download-install-app-update', () => downloadAndInstallAppUpdate())
+  ipcMain.handle('desktop:cancel-app-update-download', () => cancelAppUpdateDownload())
   ipcMain.handle('desktop:start-setup', (_event, mode: ModalSetupMode, credentials: ModalCredentials | null) => startSetup(mode, credentials))
   ipcMain.handle('desktop:download-modal-output', (_event, request: VolumeDownloadRequest) => downloadModalVolumeOutput(request))
   ipcMain.handle('desktop:release-model-preview', (_event, previewId: string) => releaseModalModelPreview(previewId))

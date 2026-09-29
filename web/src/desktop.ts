@@ -1,4 +1,4 @@
-import type { ModalCredentials, ModalModelPreview, ModalSetupMode, OutputFile, RuntimeConfig, SetupStatus, VolumeDownloadRequest } from './types.ts'
+import type { AppUpdateCheckResult, AppUpdateProgress, ModalAppVersionStatus, ModalCredentials, ModalModelPreview, ModalSetupMode, OutputFile, RuntimeConfig, SetupStatus, VolumeDownloadRequest } from './types.ts'
 import { downloadOutput } from './api.ts'
 
 export async function getRuntimeConfig(): Promise<RuntimeConfig> {
@@ -6,6 +6,30 @@ export async function getRuntimeConfig(): Promise<RuntimeConfig> {
   const response = await fetch('/runtime-config.json', { cache: 'no-store' })
   if (!response.ok) throw new Error('Could not load runtime configuration')
   return response.json()
+}
+
+export function checkForAppUpdate(): Promise<AppUpdateCheckResult> {
+  if (window.gooseStudio) return window.gooseStudio.checkForAppUpdate()
+  return Promise.resolve({ state: 'unsupported', currentVersion: '' })
+}
+
+export function checkModalAppVersion(): Promise<ModalAppVersionStatus> {
+  if (window.gooseStudio) return window.gooseStudio.checkModalAppVersion()
+  return Promise.resolve({ state: 'unsupported', appVersion: '' })
+}
+
+export function downloadAndInstallAppUpdate() {
+  if (!window.gooseStudio) return Promise.reject(new Error('App updates are available in the installed Goose Studio app.'))
+  return window.gooseStudio.downloadAndInstallAppUpdate()
+}
+
+export function cancelAppUpdateDownload() {
+  if (!window.gooseStudio) return Promise.resolve()
+  return window.gooseStudio.cancelAppUpdateDownload()
+}
+
+export function onAppUpdateProgress(listener: (progress: AppUpdateProgress) => void) {
+  return window.gooseStudio?.onAppUpdateProgress(listener) || (() => undefined)
 }
 
 export async function startModalSetup(mode: ModalSetupMode, credentials: ModalCredentials | null) {

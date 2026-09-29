@@ -4,12 +4,13 @@ import { createElement, useEffect, useRef, useState } from 'react'
 import { cancelJob, checkConnection, deleteJob, downloadOutput, getJob, getWorkflowCapabilities, installWorkflow, submitJob, submitVoxelizationJob, uploadInputs } from './api.ts'
 import FileDrop from './components/FileDrop.tsx'
 import AppLogDialog from './components/AppLogDialog.tsx'
+import AppUpdateDialog, { type AppUpdateDialogState } from './components/AppUpdateDialog.tsx'
 import SetupDialog from './components/SetupDialog.tsx'
 import SettingsMenu from './components/SettingsMenu.tsx'
 import WorkflowInstallDialog from './components/WorkflowInstallDialog.tsx'
-import { appendAppLog, downloadOutputToDisk, forgetSavedModalCredentials, getRuntimeConfig, releaseModelPreview } from './desktop.ts'
+import { appendAppLog, cancelAppUpdateDownload, checkForAppUpdate, checkModalAppVersion, downloadAndInstallAppUpdate, downloadOutputToDisk, forgetSavedModalCredentials, getRuntimeConfig, onAppUpdateProgress, releaseModelPreview } from './desktop.ts'
 import { estimateWorkflow, formatCreditEstimate, type WorkflowEstimate } from './estimates.ts'
-import type { Job, JobState, ModalModelPreview, OutputFile, RuntimeConfig, VoxelizationOptions, WorkflowInstallStatus, WorkflowKind, WorkloadKind } from './types.ts'
+import type { AppUpdateCheckResult, AppUpdateProgress, Job, JobState, ModalModelPreview, OutputFile, RuntimeConfig, VoxelizationOptions, WorkflowInstallStatus, WorkflowKind, WorkloadKind } from './types.ts'
 import { characterSwap, imageEdit, imageTo3d, imageTo3dV2, liteUpscale, outputNodes, textToImage, tryOn } from './workflows.ts'
 
 const workflows = [
@@ -28,6 +29,8 @@ const hiddenWorkflowDetails = [
 
 const builtInWorkflows = new Set<WorkflowKind>(['voxelize'])
 const HISTORY_PAGE_SIZE = 12
+const UPDATE_REMINDER_KEY = 'gooseStudioUpdateReminderUntil'
+const UPDATE_REMINDER_MS = 24 * 60 * 60 * 1000
 
 function workflowReady(workflow: WorkflowKind, installed: WorkflowKind[]) {
   return builtInWorkflows.has(workflow) || installed.includes(workflow)
@@ -72,6 +75,7 @@ export default function App() {
   const [setupOpen, setSetupOpen] = useState(false)
   const [setupInstance, setSetupInstance] = useState(0)
   const [setupMode, setSetupMode] = useState<'setup' | 'update' | 'switch'>('setup')
+  const [setupAutoStart, setSetupAutoStart] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [logOpen, setLogOpen] = useState(false)
   const [installed, setInstalled] = useState<WorkflowKind[]>([])
@@ -80,13 +84,27 @@ export default function App() {
   const [runs, setRuns] = useState<ActiveWorkflowRuns>({})
   const [history, setHistory] = useState(savedJobs)
   const [historyPage, setHistoryPage] = useState(0)
-  const polling = useRef(new Map<string, number>())
+  const [appUpdateDialog, setAppUpdateDialog] = useState<AppUpdateDialogState | null>(null)
+  const [pendingStartupUpdate, setPendingStartupUpdate] = useState<Extract<AppUpdateCheckResult, { state: 'available' }> | null>(null)
+  const polling = useRef(new Map<string, () => void>())
+  const startupUpdateCheckStarted = useRef(false)
+  const updateCheckRequest = useRef(0)
 
   const loadConfig = async () => {
     appendAppLog('Checking Modal connection')
     try {
       const next = await getRuntimeConfig()
       if (!next.baseUrl || !next.apiKey) { setSetupMode('setup'); setSetupOpen(true); return false }
+      setConfig(next)
+      const modalVersion = await checkModalAppVersion()
+      if (modalVersion.state === 'update-required') {
+        appendAppLog(`Modal app update required after Goose Studio ${modalVersion.appVersion} was installed`)
+        setConnected(false)
+        setSetupMode('update')
+        setSetupAutoStart(Boolean(next.hasSavedModalCredentials))
+        setSetupOpen(true)
+        return false
+      }
       await checkConnection(next)
       const capabilities = await getWorkflowCapabilities(next)
       setConfig(next)
@@ -97,12 +115,39 @@ export default function App() {
       return true
     } catch (error) {
       appendAppLog(`Modal connection unavailable: ${(error as Error).message}`)
-      setSetupMode('setup'); setSetupOpen(true); setConnected(false); return false
+      setSetupMode('setup'); setSetupAutoStart(false); setSetupOpen(true); setConnected(false); return false
     }
   }
 
   useEffect(() => { const timer = window.setTimeout(() => { void loadConfig().finally(() => setInitializing(false)) }, 0); return () => clearTimeout(timer) }, [])
-  useEffect(() => () => { polling.current.forEach((timer) => clearInterval(timer)); polling.current.clear() }, [])
+  useEffect(() => () => { polling.current.forEach((stop) => stop()); polling.current.clear() }, [])
+  useEffect(() => {
+    if (initializing || !window.gooseStudio || startupUpdateCheckStarted.current) return
+    startupUpdateCheckStarted.current = true
+    if (isUpdateReminderActive()) return
+    const requestId = ++updateCheckRequest.current
+    appendAppLog('Checking for Goose Studio updates on startup')
+    void checkForAppUpdate().then((result) => {
+      if (requestId === updateCheckRequest.current && result.state === 'available') setPendingStartupUpdate(result)
+    }).catch((error) => {
+      appendAppLog(`Startup app update check failed: ${(error as Error).message}`)
+    })
+  }, [initializing])
+  useEffect(() => {
+    if (setupOpen || !pendingStartupUpdate) return
+    const timer = window.setTimeout(() => {
+      setAppUpdateDialog({ state: 'available', currentVersion: pendingStartupUpdate.currentVersion, version: pendingStartupUpdate.version })
+      setPendingStartupUpdate(null)
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [pendingStartupUpdate, setupOpen])
+  useEffect(() => onAppUpdateProgress((progress) => {
+    setAppUpdateDialog((current) => {
+      if (!current) return current
+      const version = 'version' in current ? current.version : undefined
+      return appUpdateDialogFromProgress(progress, version)
+    })
+  }), [])
   useEffect(() => {
     if (!installing || installStatus.state !== 'running') return
     const timer = window.setInterval(async () => {
@@ -132,9 +177,9 @@ export default function App() {
   }
 
   const stopPolling = (jobId: string) => {
-    const timer = polling.current.get(jobId)
-    if (timer !== undefined) {
-      clearInterval(timer)
+    const stop = polling.current.get(jobId)
+    if (stop) {
+      stop()
       polling.current.delete(jobId)
     }
   }
@@ -181,19 +226,42 @@ export default function App() {
   }
 
   const poll = (jobId: string, workflow: WorkflowKind) => {
+    let stopped = false
+    let timer = 0
+    let consecutiveErrors = 0
+    const stop = () => {
+      stopped = true
+      if (timer) window.clearTimeout(timer)
+    }
+    const schedule = (delay: number) => {
+      if (!stopped) timer = window.setTimeout(() => { void check() }, delay)
+    }
     const check = async () => {
+      if (stopped) return
       try {
         const next = await getJob(config, jobId)
+        if (stopped) return
+        consecutiveErrors = 0
         if (next.status === 'completed') { stopPolling(jobId); complete(next, workflow) }
         else if (next.status === 'failed') { stopPolling(jobId); appendAppLog(`${workflow} job ${jobId} failed: ${next.error || 'Generation failed'}`); updateCurrentWorkflowRun(workflow, jobId, { job: next, state: 'failed', message: next.error || 'Generation failed' }) }
         else {
           const cpuJob = workflow === 'voxelize'
           updateCurrentWorkflowRun(workflow, jobId, { job: next, state: next.status === 'running' ? 'running' : 'queued', message: next.status === 'running' ? (cpuJob ? 'Converting on Modal' : 'Creating on your Modal GPU') : (cpuJob ? 'Waiting for Modal' : 'Waiting for a GPU') })
+          schedule(5000)
         }
-      } catch (error) { stopPolling(jobId); appendAppLog(`${workflow} job ${jobId} status check failed: ${(error as Error).message}`); updateCurrentWorkflowRun(workflow, jobId, { state: 'failed', message: (error as Error).message }) }
+      } catch (error) {
+        if (stopped) return
+        consecutiveErrors += 1
+        if (consecutiveErrors === 1 || consecutiveErrors % 5 === 0) {
+          appendAppLog(`${workflow} job ${jobId} status check failed; retry ${consecutiveErrors}: ${(error as Error).message}`)
+        }
+        updateCurrentWorkflowRun(workflow, jobId, { message: 'Connection interrupted. Reconnecting to Modal…' })
+        const delay = Math.min(5000 * (2 ** Math.min(consecutiveErrors - 1, 4)), 60000)
+        schedule(delay)
+      }
     }
+    polling.current.set(jobId, stop)
     void check()
-    polling.current.set(jobId, window.setInterval(check, 5000))
   }
 
   const run = async (workflow: WorkflowKind, files: File[], build: (names: string[], jobId: string) => Promise<Record<string, unknown>[]>, repeat: () => void, options: RunOptions = {}) => {
@@ -251,6 +319,7 @@ export default function App() {
   const updateCloudApp = () => {
     setSettingsOpen(false)
     setSetupMode('update')
+    setSetupAutoStart(false)
     setSetupInstance((current) => current + 1)
     setSetupOpen(true)
   }
@@ -258,6 +327,7 @@ export default function App() {
   const switchModalAccount = () => {
     setSettingsOpen(false)
     setSetupMode('switch')
+    setSetupAutoStart(false)
     setSetupInstance((current) => current + 1)
     setSetupOpen(true)
   }
@@ -271,6 +341,42 @@ export default function App() {
     }
   }
 
+  const checkAppUpdates = async () => {
+    setSettingsOpen(false)
+    const requestId = ++updateCheckRequest.current
+    setAppUpdateDialog({ state: 'checking' })
+    try {
+      const result = await checkForAppUpdate()
+      if (requestId !== updateCheckRequest.current) return
+      if (result.state === 'available') setAppUpdateDialog({ state: 'available', currentVersion: result.currentVersion, version: result.version })
+      else if (result.state === 'up-to-date') setAppUpdateDialog({ state: 'up-to-date', currentVersion: result.currentVersion })
+      else setAppUpdateDialog(null)
+    } catch (error) {
+      if (requestId === updateCheckRequest.current) setAppUpdateDialog({ state: 'error', error: (error as Error).message })
+    }
+  }
+
+  const installAppUpdate = () => {
+    const version = appUpdateDialog && 'version' in appUpdateDialog ? appUpdateDialog.version : undefined
+    if (!version) return
+    setAppUpdateDialog({ state: 'downloading', version, progress: 0, transferred: 0, total: null })
+    void downloadAndInstallAppUpdate().catch((error) => {
+      const message = (error as Error).message
+      setAppUpdateDialog((current) => current?.state === 'installing' || current?.state === 'cancelled' || current?.state === 'error'
+        ? current
+        : message === 'Update download cancelled.'
+          ? { state: 'cancelled', version }
+          : { state: 'error', error: message, version })
+    })
+  }
+
+  const remindAboutAppUpdateLater = () => {
+    try { localStorage.setItem(UPDATE_REMINDER_KEY, String(Date.now() + UPDATE_REMINDER_MS)) } catch { /* Update reminders still work for this session if storage is unavailable. */ }
+    updateCheckRequest.current += 1
+    setPendingStartupUpdate(null)
+    setAppUpdateDialog(null)
+  }
+
   const selected = [...workflows, ...hiddenWorkflowDetails].find((item) => item.id === kind)!
   const selectedRun = runs[kind] || idleWorkflowRun()
   const historyPageCount = Math.max(1, Math.ceil(history.length / HISTORY_PAGE_SIZE))
@@ -279,7 +385,7 @@ export default function App() {
     <div className="app-shell">
       <header className="topbar">
         <div className="brand"><span className="brand-mark"><img src={gooseStudioLogo} alt="" /></span><div><strong>Goose Studio</strong><small>Powered by your Modal credits</small></div></div>
-        <div className="connection-state"><span className={connected ? 'online' : ''} />{connected ? 'Modal connected' : 'Setup required'}{connected && <a className="modal-credit-link" href={modalUsageUrl(config)} target="_blank" rel="noreferrer" aria-label="View Modal credit balance" title="View Modal credit balance">Modal credits <ExternalLink size={13} /></a>}{!connected && <button className="setup-modal-button" onClick={() => { setSetupMode('setup'); setSetupOpen(true) }}><CloudCog size={16} /> Setup Modal</button>}<SettingsMenu open={settingsOpen} usageUrl={modalUsageUrl(config)} hasSavedModalCredentials={Boolean(config.hasSavedModalCredentials)} onToggle={() => setSettingsOpen((current) => !current)} onClose={() => setSettingsOpen(false)} onViewLog={() => setLogOpen(true)} onUpdateApp={updateCloudApp} onSwitchAccount={switchModalAccount} onForgetModalAccess={() => void forgetModalAccess()} /></div>
+        <div className="connection-state"><span className={connected ? 'online' : ''} />{connected ? 'Modal connected' : 'Setup required'}{connected && <a className="modal-credit-link" href={modalUsageUrl(config)} target="_blank" rel="noreferrer" aria-label="View Modal credit balance" title="View Modal credit balance">Modal credits <ExternalLink size={13} /></a>}{!connected && <button className="setup-modal-button" onClick={() => { setSetupMode('setup'); setSetupOpen(true) }}><CloudCog size={16} /> Setup Modal</button>}<SettingsMenu open={settingsOpen} usageUrl={modalUsageUrl(config)} hasSavedModalCredentials={Boolean(config.hasSavedModalCredentials)} onToggle={() => setSettingsOpen((current) => !current)} onClose={() => setSettingsOpen(false)} onViewLog={() => setLogOpen(true)} onCheckAppUpdates={() => { void checkAppUpdates() }} canCheckAppUpdates={Boolean(window.gooseStudio)} onUpdateApp={updateCloudApp} onSwitchAccount={switchModalAccount} onForgetModalAccess={() => void forgetModalAccess()} /></div>
       </header>
 
       <main>
@@ -311,8 +417,9 @@ export default function App() {
         <section className="history-section"><div className="section-title"><div><p className="eyebrow">Recent work</p><h2>Your creations</h2></div><Clock3 /></div>{history.length ? <><div className="history-grid">{visibleHistory.map((item) => <HistoryCard key={item.job_id} item={item} config={config} onOpen={() => { const workflow = item.workflow || 'text-to-image'; setKind(workflow); updateWorkflowRun(workflow, { job: item, state: 'completed', message: 'Loaded from history', retry: null }) }} onDelete={() => { void removeCreation(item) }} />)}</div>{historyPageCount > 1 && <nav className="history-pagination" aria-label="Your creations pages"><button type="button" onClick={() => setHistoryPage((current) => Math.max(0, current - 1))} disabled={historyPage === 0} aria-label="Previous creations page"><ChevronLeft size={16} /></button><span>Page {historyPage + 1} of {historyPageCount}</span><button type="button" onClick={() => setHistoryPage((current) => Math.min(historyPageCount - 1, current + 1))} disabled={historyPage === historyPageCount - 1} aria-label="Next creations page"><ChevronRight size={16} /></button></nav>}</> : <div className="empty-history"><Image /><span>Your finished images, videos, and 3D models will appear here.</span></div>}</section>
       </main>
       <footer><span>Goose Studio</span><span>Files stay in your Modal account</span></footer>
-      <SetupDialog key={setupInstance} open={setupOpen} fullScreen mandatory={!connected} mode={setupMode} hasSavedModalCredentials={Boolean(config.hasSavedModalCredentials)} onClose={() => setSetupOpen(false)} onComplete={loadConfig} />
+      <SetupDialog key={setupInstance} open={setupOpen} fullScreen mandatory={!connected} mode={setupMode} autoStart={setupAutoStart} hasSavedModalCredentials={Boolean(config.hasSavedModalCredentials)} onClose={() => { setSetupOpen(false); setSetupAutoStart(false) }} onComplete={loadConfig} />
       <AppLogDialog open={logOpen} onClose={() => setLogOpen(false)} />
+      <AppUpdateDialog state={appUpdateDialog} onClose={() => { updateCheckRequest.current += 1; setPendingStartupUpdate(null); setAppUpdateDialog(null) }} onRemindLater={remindAboutAppUpdateLater} onInstall={installAppUpdate} onCancelDownload={() => { void cancelAppUpdateDownload() }} />
       <WorkflowInstallDialog workflow={installing} status={installStatus} onClose={() => { setInstalling(null); setInstallStatus({ state: 'idle' }) }} />
     </div>
   )
@@ -327,6 +434,23 @@ type ActiveWorkflowRuns = Partial<Record<WorkflowKind, ActiveWorkflowRun>>
 
 function idleWorkflowRun(): ActiveWorkflowRun {
   return { job: null, state: 'idle', message: 'Ready when you are', retry: null }
+}
+
+function appUpdateDialogFromProgress(progress: AppUpdateProgress, version?: string): AppUpdateDialogState {
+  if (progress.state === 'downloading') return { state: 'downloading', progress: progress.percent, transferred: progress.transferred, total: progress.total, version: version || 'latest' }
+  if (progress.state === 'verifying') return { state: 'verifying', version: version || 'latest' }
+  if (progress.state === 'installing') return { state: 'installing', version: version || 'latest' }
+  if (progress.state === 'cancelled') return { state: 'cancelled', version: version || 'latest' }
+  return { state: 'error', error: progress.error, version }
+}
+
+function isUpdateReminderActive() {
+  try {
+    const reminderUntil = Number(localStorage.getItem(UPDATE_REMINDER_KEY))
+    if (Number.isFinite(reminderUntil) && reminderUntil > Date.now()) return true
+    localStorage.removeItem(UPDATE_REMINDER_KEY)
+  } catch { /* A failed local reminder read should not block update checks. */ }
+  return false
 }
 
 function StartupLoadingScreen() {
@@ -353,12 +477,14 @@ function LiteForm({ run, installed, install }: InstallableFormProps) {
 function ImageTo3DForm({ workflow = 'image-to-3d', run, installed, install }: InstallableFormProps & { workflow?: 'image-to-3d' | 'image-to-3d-v2' }) {
   const [file, setFile] = useState<File | null>(null)
   const [model, setModel] = useState<'trellis2' | 'pixal3d'>('trellis2')
-  const [targetFaceCount, setTargetFaceCount] = useState(50_000)
+  const [targetFaceCount, setTargetFaceCount] = useState('500000')
   const [voxelize, setVoxelize] = useState(false)
   const [resolution, setResolution] = useState(128)
-  const submit = () => { if (!file) return; run(workflow, [file], (names, id) => (workflow === 'image-to-3d-v2' ? imageTo3dV2(names[0], id, model, targetFaceCount) : imageTo3d(names[0], id)) as never, submit, voxelize ? { postprocess: { type: 'voxelize', resolution } } : undefined) }
+  const parsedFaceCount = Number(targetFaceCount)
+  const validFaceCount = /^\d+$/.test(targetFaceCount) && parsedFaceCount >= 1 && parsedFaceCount <= 50_000_000
+  const submit = () => { if (!file || (workflow === 'image-to-3d-v2' && !validFaceCount)) return; run(workflow, [file], (names, id) => (workflow === 'image-to-3d-v2' ? imageTo3dV2(names[0], id, model, parsedFaceCount) : imageTo3d(names[0], id)) as never, submit, voxelize ? { postprocess: { type: 'voxelize', resolution } } : undefined) }
   const estimate = file ? estimateWorkflow(workflow, { voxelize, voxelResolution: resolution }) : null
-  return <div className="workflow-form"><div className="lite-callout"><Box /><div><strong>{workflow === 'image-to-3d-v2' ? 'Detailed 3D model' : 'Textured 3D model'}</strong><small>Upload one clear image and Goose Studio will create a downloadable 3D model.</small></div></div><FileDrop label="Image to turn into 3D" hint="A clear product image works best" accept="image/*" file={file} onChange={setFile} />{workflow === 'image-to-3d-v2' && <><ModelSwitch model={model} setModel={setModel} /><FaceCount value={targetFaceCount} setValue={setTargetFaceCount} /></>}<Toggle label="Also create a voxel model" checked={voxelize} setChecked={setVoxelize} />{voxelize && <VoxelResolution value={resolution} setValue={setResolution} />}<WorkflowButton installed={installed} disabled={!file} install={install} generate={submit} estimate={estimate}><Box /> Create 3D model</WorkflowButton></div>
+  return <div className="workflow-form"><div className="lite-callout"><Box /><div><strong>{workflow === 'image-to-3d-v2' ? 'Detailed 3D model' : 'Textured 3D model'}</strong><small>Upload one clear image and Goose Studio will create a downloadable 3D model.</small></div></div><FileDrop label="Image to turn into 3D" hint="A clear product image works best" accept="image/*" file={file} onChange={setFile} />{workflow === 'image-to-3d-v2' && <><ModelSwitch model={model} setModel={setModel} /><FaceCount value={targetFaceCount} setValue={setTargetFaceCount} /></>}<Toggle label="Also create a voxel model" checked={voxelize} setChecked={setVoxelize} />{voxelize && <VoxelResolution value={resolution} setValue={setResolution} />}<WorkflowButton installed={installed} disabled={!file || (workflow === 'image-to-3d-v2' && !validFaceCount)} install={install} generate={submit} estimate={estimate}><Box /> Create 3D model</WorkflowButton></div>
 }
 
 function VoxelizeForm({ run }: { run: VoxelizeRun }) {
@@ -377,12 +503,15 @@ function VoxelResolution({ value, setValue }: { value: number; setValue: (value:
   return <label className="voxel-resolution"><span><strong>Voxel resolution</strong><small>Longest side of the object</small></span><input className="voxel-resolution-number" type="number" min="1" max="256" step="1" value={value} onChange={(event) => update(event.target.value)} aria-label="Voxel resolution" /><input type="range" min="1" max="256" value={value} onChange={(event) => update(event.target.value)} aria-label="Voxel resolution slider" /></label>
 }
 
-function FaceCount({ value, setValue }: { value: number; setValue: (value: number) => void }) {
-  const update = (raw: string) => {
-    const parsed = Number(raw)
-    if (Number.isFinite(parsed)) setValue(Math.max(1, Math.min(50_000_000, Math.round(parsed))))
+function FaceCount({ value, setValue }: { value: string; setValue: (value: string) => void }) {
+  const update = (raw: string) => setValue(raw.replace(/\D/g, '').slice(0, 8))
+  const normalize = () => {
+    if (!value) return
+    const parsed = Math.max(1, Math.min(50_000_000, Number(value)))
+    setValue(String(parsed))
   }
-  return <label className="voxel-resolution face-count"><span><strong>Target face count</strong><small>Lower values make a lighter model; higher values keep more detail.</small></span><input className="voxel-resolution-number" type="number" min="1" max="50000000" step="1000" value={value} onChange={(event) => update(event.target.value)} aria-label="Target face count" /></label>
+  const valid = /^\d+$/.test(value) && Number(value) >= 1 && Number(value) <= 50_000_000
+  return <label className="voxel-resolution face-count"><span><strong>Target face count</strong><small>{valid ? 'Lower values make a lighter model; higher values keep more detail.' : 'Enter a whole number from 1 to 50,000,000.'}</small></span><input className="voxel-resolution-number" type="text" inputMode="numeric" pattern="[0-9]*" value={value} onChange={(event) => update(event.target.value)} onBlur={normalize} onFocus={(event) => event.currentTarget.select()} aria-label="Target face count" aria-invalid={!valid} /></label>
 }
 
 function TextToImageForm({ run, installed, install }: InstallableFormProps) {

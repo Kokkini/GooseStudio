@@ -39,6 +39,8 @@ HUNYUAN_ASSET_PATHS_FILE = ASSETS_ROOT / "hunyuan3d-assets.json"
 HUNYUAN_SNAPSHOT_IDS = {"hunyuan3d-paint-pbr", "dinov2-giant"}
 VOXEL_MIN_RESOLUTION = 1
 VOXEL_MAX_RESOLUTION = 256
+JOB_FUNCTION_TIMEOUT_SECONDS = 7200
+FUNCTION_CALL_STATUS_CHECK_INTERVAL_SECONDS = 30
 VOXELIZE_SCRIPT_FILE = Path(__file__).resolve().parents[1] / "tools" / "voxelize_glb.py"
 VOXELIZE_SCRIPT_PATH = "/app/voxelize_glb.py"
 
@@ -79,6 +81,7 @@ installer_image = (
 )
 
 _COMFY_GENERATION: int | None = None
+_FUNCTION_CALL_STATUS_CHECKED_AT: dict[str, float] = {}
 
 
 def _job_dir(job_id: str) -> Path:
@@ -420,6 +423,102 @@ def _wait_for_workflow(prompt_id: str) -> dict:
         time.sleep(2)
 
 
+def _save_reconciled_job_failure(job_id: str, status_data: dict, message: str) -> dict:
+    failed_status = {
+        **status_data,
+        "job_id": job_id,
+        "status": "failed",
+        "error": message,
+        "updated_at": _now(),
+    }
+    _save_status(job_id, failed_status)
+    io_volume.commit()
+    _FUNCTION_CALL_STATUS_CHECKED_AT.pop(job_id, None)
+    return failed_status
+
+
+def _reconcile_job_status(job_id: str, status_data: dict) -> dict:
+    """Use Modal's durable call result to repair a job left active by a killed worker."""
+    if status_data.get("status") not in {"queued", "running"}:
+        _FUNCTION_CALL_STATUS_CHECKED_AT.pop(job_id, None)
+        return status_data
+
+    checked_at = time.monotonic()
+    last_checked = _FUNCTION_CALL_STATUS_CHECKED_AT.get(job_id, 0.0)
+    if checked_at - last_checked < FUNCTION_CALL_STATUS_CHECK_INTERVAL_SECONDS:
+        return status_data
+    _FUNCTION_CALL_STATUS_CHECKED_AT[job_id] = checked_at
+
+    try:
+        call_data = json.loads((_job_dir(job_id) / "call.json").read_text(encoding="utf-8"))
+        call_id = call_data.get("call_id")
+    except (FileNotFoundError, json.JSONDecodeError):
+        return status_data
+    if not isinstance(call_id, str) or not call_id:
+        return status_data
+
+    try:
+        modal.FunctionCall.from_id(call_id).get(timeout=0)
+    except modal.exception.FunctionTimeoutError as exc:
+        return _save_reconciled_job_failure(
+            job_id,
+            status_data,
+            f"Modal stopped this task after its run-time limit. {exc}".strip(),
+        )
+    except modal.exception.OutputExpiredError:
+        return _save_reconciled_job_failure(
+            job_id,
+            status_data,
+            "Modal no longer has a result for this task. Check the Modal job logs for details.",
+        )
+    except modal.exception.InputCancellation:
+        return _save_reconciled_job_failure(job_id, status_data, "The Modal worker stopped before completing this task.")
+    except (modal.exception.TimeoutError, TimeoutError):
+        # Modal's zero-timeout poll uses TimeoutError to mean the call is still active.
+        return status_data
+    except (modal.exception.ServiceError, modal.exception.ConnectionError, modal.exception.InternalError):
+        # A temporary control-plane problem must not be mistaken for a failed generation.
+        return status_data
+    except (
+        modal.exception.ExecutionError,
+        modal.exception.InternalFailure,
+        modal.exception.RemoteError,
+        modal.exception.NotFoundError,
+    ) as exc:
+        return _save_reconciled_job_failure(
+            job_id,
+            status_data,
+            f"The Modal worker stopped before completing this task: {exc}".strip(),
+        )
+    except modal.exception.Error:
+        # Keep the saved job state while Modal is temporarily unable to confirm the call result.
+        return status_data
+    except Exception as exc:
+        # Modal propagates user-code exceptions from completed calls; transport failures are
+        # represented by modal.exception errors and handled above.
+        return _save_reconciled_job_failure(
+            job_id,
+            status_data,
+            f"The Modal worker failed before saving a final result: {exc}".strip(),
+        )
+
+    # A successful call should have committed a terminal status before returning. Reload after
+    # checking the call because the first reload in the HTTP handler may have raced that commit.
+    io_volume.reload()
+    try:
+        latest_status = _load_status(job_id)
+    except (FileNotFoundError, json.JSONDecodeError):
+        latest_status = status_data
+    if latest_status.get("status") in {"queued", "running"}:
+        return _save_reconciled_job_failure(
+            job_id,
+            latest_status,
+            "The Modal worker finished without saving a final result. Check the Modal job logs for details.",
+        )
+    _FUNCTION_CALL_STATUS_CHECKED_AT.pop(job_id, None)
+    return latest_status
+
+
 def _check_execution(result: dict, prompt_id: str) -> None:
     status = result.get("status", {})
     if status.get("status_str") != "error":
@@ -613,17 +712,24 @@ def _voxelize_mesh_outputs(outputs: list[dict], job_id: str, resolution: int) ->
 def _process_voxel_job(job_id: str, input_name: str, resolution: int) -> None:
     try:
         io_volume.reload()
+        started_at = _now()
+        _save_status(
+            job_id,
+            {
+                "job_id": job_id,
+                "status": "running",
+                "outputs": [],
+                "started_at": started_at,
+                "updated_at": started_at,
+            },
+        )
+        io_volume.commit()
         resolution = _validate_voxel_resolution(resolution)
         source = _voxel_input_path(job_id, input_name)
         if not source.is_file():
             raise FileNotFoundError(f"Uploaded GLB not found: {source.name}")
         output_dir = IO_ROOT / "output" / "vox" / job_id
         output_path = output_dir / f"{source.stem}.vox"
-        _save_status(
-            job_id,
-            {"job_id": job_id, "status": "running", "outputs": [], "updated_at": _now()},
-        )
-        io_volume.commit()
         _run_voxelizer(source, output_path, resolution)
         outputs = [_output_record(output_path, job_id)]
         _save_status(
@@ -650,15 +756,22 @@ def _process_job(
 ) -> None:
     try:
         io_volume.reload()
-        _prepare_assets_for_generation(assets_generation)
-        _setup_comfyui_paths()
-        _start_comfyui()
+        started_at = _now()
         outputs = []
         _save_status(
             job_id,
-            {"job_id": job_id, "status": "running", "outputs": outputs, "updated_at": _now()},
+            {
+                "job_id": job_id,
+                "status": "running",
+                "outputs": outputs,
+                "started_at": started_at,
+                "updated_at": started_at,
+            },
         )
         io_volume.commit()
+        _prepare_assets_for_generation(assets_generation)
+        _setup_comfyui_paths()
+        _start_comfyui()
 
         for workflow in workflows:
             prompt_id = _queue_workflow(workflow)
@@ -669,7 +782,13 @@ def _process_job(
             )
             _save_status(
                 job_id,
-                {"job_id": job_id, "status": "running", "outputs": outputs, "updated_at": _now()},
+                {
+                    "job_id": job_id,
+                    "status": "running",
+                    "outputs": outputs,
+                    "started_at": started_at,
+                    "updated_at": _now(),
+                },
             )
             io_volume.commit()
 
@@ -682,14 +801,26 @@ def _process_job(
 
         _save_status(
             job_id,
-            {"job_id": job_id, "status": "completed", "outputs": outputs, "updated_at": _now()},
+            {
+                "job_id": job_id,
+                "status": "completed",
+                "outputs": outputs,
+                "started_at": started_at,
+                "updated_at": _now(),
+            },
         )
         io_volume.commit()
     except Exception as exc:
         traceback.print_exc()
         _save_status(
             job_id,
-            {"job_id": job_id, "status": "failed", "error": str(exc), "updated_at": _now()},
+            {
+                "job_id": job_id,
+                "status": "failed",
+                "error": str(exc),
+                "started_at": locals().get("started_at"),
+                "updated_at": _now(),
+            },
         )
         io_volume.commit()
         raise
@@ -698,7 +829,7 @@ def _process_job(
 @app.function(
     image=worker_image,
     gpu=IMAGE_GPU_TYPE,
-    timeout=7200,
+    timeout=JOB_FUNCTION_TIMEOUT_SECONDS,
     max_containers=1,
     scaledown_window=60,
     volumes={str(ASSETS_ROOT): assets_volume, str(IO_ROOT): io_volume},
@@ -716,7 +847,7 @@ def process_image_job(
 @app.function(
     image=worker_image,
     gpu=VIDEO_GPU_TYPE,
-    timeout=7200,
+    timeout=JOB_FUNCTION_TIMEOUT_SECONDS,
     max_containers=1,
     scaledown_window=60,
     volumes={str(ASSETS_ROOT): assets_volume, str(IO_ROOT): io_volume},
@@ -734,7 +865,7 @@ def process_image_to_3d_job(
 @app.function(
     image=worker_image,
     gpu=VIDEO_GPU_TYPE,
-    timeout=7200,
+    timeout=JOB_FUNCTION_TIMEOUT_SECONDS,
     max_containers=1,
     scaledown_window=60,
     volumes={str(ASSETS_ROOT): assets_volume, str(IO_ROOT): io_volume},
@@ -752,7 +883,7 @@ def process_video_job(
 @app.function(
     image=voxel_image,
     cpu=2,
-    timeout=7200,
+    timeout=JOB_FUNCTION_TIMEOUT_SECONDS,
     max_containers=1,
     scaledown_window=60,
     volumes={str(IO_ROOT): io_volume},
@@ -1019,9 +1150,10 @@ def _api():
     def status(job_id: str, _: None = Depends(authorize)):
         io_volume.reload()
         try:
-            return _load_status(job_id)
+            status_data = _load_status(job_id)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail="Job not found") from exc
+        return _reconcile_job_status(job_id, status_data)
 
     @api.get("/download")
     def download(job_id: str, output_id: str, _: None = Depends(authorize)):

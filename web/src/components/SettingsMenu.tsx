@@ -7,13 +7,15 @@ interface Props {
   onToggle: () => void
   onClose: () => void
   onViewLog: () => void
+  onCheckAppUpdates: () => void
+  canCheckAppUpdates: boolean
   onUpdateApp: () => void
   onSwitchAccount: () => void
   hasSavedModalCredentials: boolean
   onForgetModalAccess: () => void
 }
 
-export default function SettingsMenu({ open, usageUrl, onToggle, onClose, onViewLog, onUpdateApp, onSwitchAccount, hasSavedModalCredentials, onForgetModalAccess }: Props) {
+export default function SettingsMenu({ open, usageUrl, onToggle, onClose, onViewLog, onCheckAppUpdates, canCheckAppUpdates, onUpdateApp, onSwitchAccount, hasSavedModalCredentials, onForgetModalAccess }: Props) {
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -39,6 +41,7 @@ export default function SettingsMenu({ open, usageUrl, onToggle, onClose, onView
       </button>
       {open && <div className="settings-panel" role="menu">
         <button role="menuitem" onClick={() => { onViewLog(); onClose() }}><FileText size={16} /> View app log</button>
+        {canCheckAppUpdates && <button role="menuitem" onClick={() => { onCheckAppUpdates(); onClose() }}><RefreshCw size={16} /> Check for app updates</button>}
         <button role="menuitem" onClick={() => { onUpdateApp(); onClose() }}><RefreshCw size={16} /> Update Modal app</button>
         <button role="menuitem" onClick={() => { onSwitchAccount(); onClose() }}><UserRound size={16} /> Switch Modal account</button>
         {hasSavedModalCredentials && <button role="menuitem" onClick={() => { onForgetModalAccess(); onClose() }}><KeyRound size={16} /> Forget saved Modal access</button>}

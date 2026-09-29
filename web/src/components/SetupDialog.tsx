@@ -9,18 +9,20 @@ interface Props {
   fullScreen?: boolean
   mandatory?: boolean
   mode?: ModalSetupMode
+  autoStart?: boolean
   hasSavedModalCredentials?: boolean
   onClose: () => void
   onComplete: () => Promise<boolean>
 }
 
-export default function SetupDialog({ open, fullScreen = false, mandatory = false, mode = 'setup', hasSavedModalCredentials = false, onClose, onComplete }: Props) {
+export default function SetupDialog({ open, fullScreen = false, mandatory = false, mode = 'setup', autoStart = false, hasSavedModalCredentials = false, onClose, onComplete }: Props) {
   const [tokenCommand, setTokenCommand] = useState('')
   const [replaceSavedCredentials, setReplaceSavedCredentials] = useState(false)
   const [workspace, setWorkspace] = useState('')
   const [status, setStatus] = useState<SetupStatus>({ state: 'idle', lines: [] })
   const [error, setError] = useState('')
   const connectionCheck = useRef<Promise<boolean> | null>(null)
+  const autoStartInitiated = useRef(false)
 
   const ensureConnection = useCallback(() => {
     if (!connectionCheck.current) {
@@ -42,6 +44,20 @@ export default function SetupDialog({ open, fullScreen = false, mandatory = fals
     }, 1500)
     return () => clearInterval(timer)
   }, [status.state, ensureConnection])
+
+  useEffect(() => {
+    if (!open || !autoStart || mode !== 'update' || !hasSavedModalCredentials || status.state !== 'idle' || autoStartInitiated.current) return
+    autoStartInitiated.current = true
+    const timer = window.setTimeout(() => {
+      setStatus({ state: 'running', lines: ['Starting the automatic Modal app update...'] })
+      void startModalSetup('update', null).catch((reason) => {
+        const message = (reason as Error).message || 'Could not start the automatic Modal app update.'
+        setError(message)
+        setStatus({ state: 'failed', lines: [`[error] ${message}`], error: message })
+      })
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [open, autoStart, mode, hasSavedModalCredentials, status.state])
 
   useEffect(() => {
     if (!open || !fullScreen) return
