@@ -12,7 +12,7 @@
   <a href="https://github.com/Kokkini/GooseStudio/releases">All releases</a>
 </p>
 
-Goose Studio helps you create images, videos, 3D models, and voxel models using your own Modal account and credits.
+Goose Studio helps you create images, videos, 3D models, animations, and voxel models using your own Modal account and credits.
 
 ## What you can make
 
@@ -23,6 +23,7 @@ Goose Studio helps you create images, videos, 3D models, and voxel models using 
 - Upscale an image
 - Turn an image into a textured 3D model
 - Turn a 3D model into a MagicaVoxel `.vox` file
+- Animate a rigged 3D model from a text prompt
 
 ## Before you start
 
@@ -47,6 +48,8 @@ Goose Studio uses your Modal account for setup and generation. The app shows you
 ## Create something
 
 Choose a tool, add an image or description, adjust its settings, and select **Generate**. You can switch to another tool while a task is running; Modal can process tasks in parallel.
+
+**Animate 3D model** accepts a skinned GLB or FBX and a motion prompt. A separate animation clip is optional; if supplied, it must use the same bone names and parent hierarchy. The clip supplies a skeleton reference; the prompt sets the generated action, and the clip's movement is not copied. The workflow can also use an animation embedded in the model file. With no clip, it builds a neutral skeleton reference from the model's rest pose. Each generation returns an animated GLB and a native Blender project, with 60 frames at 30 fps. Choose **Download for Blender** to open the `.blend` directly: bone display helpers are removed, the rig is hidden in the viewport, the model is framed, and the playback range is set. The rig and animation remain editable, and available texture images are packed into the project. The GLB remains available for other 3D applications; Blender may create its own bone display helpers when importing it. This checkpoint supports rigs with 5–60 joints, and its pretrained weights are licensed for non-commercial use under [CC BY-NC 4.0](https://huggingface.co/Linzhan/UniMate).
 
 Finished work appears under **Your creations**. Open an item to view or download it, or delete it to remove it from the list and from the app's Modal storage.
 

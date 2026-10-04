@@ -3,8 +3,16 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $BuildRoot = Join-Path $Root "build\windows-sidecar-build"
 $Stage = Join-Path $Root "build\windows-sidecar"
+$TempRoot = Join-Path $Root "temp\windows-app-build"
 $Venv = Join-Path $BuildRoot "venv"
 $Python = Join-Path $Venv "Scripts\python.exe"
+
+New-Item -Path $TempRoot -ItemType Directory -Force | Out-Null
+$env:TEMP = $TempRoot
+$env:TMP = $TempRoot
+$env:TMPDIR = $TempRoot
+$env:PIP_CACHE_DIR = Join-Path $TempRoot "pip-cache"
+$env:PYINSTALLER_CONFIG_DIR = Join-Path $TempRoot "pyinstaller-config"
 
 Remove-Item $BuildRoot, $Stage -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $BuildRoot, $Stage -ItemType Directory -Force | Out-Null
@@ -49,6 +57,6 @@ Copy-Item -Path @(
     (Join-Path $Root "scripts\download_hunyuan3d_assets.py")
 ) -Destination (Join-Path $Stage "app\modal")
 Copy-Item -Path @((Join-Path $Root "assets\models.json"), (Join-Path $Root "assets\allowed-node-classes.json")) -Destination (Join-Path $Stage "app\assets")
-Copy-Item -Path (Join-Path $Root "tools\voxelize_glb.py") -Destination (Join-Path $Stage "app\tools")
+Copy-Item -Path @((Join-Path $Root "tools\voxelize_glb.py"), (Join-Path $Root "tools\unimate_worker.py")) -Destination (Join-Path $Stage "app\tools")
 
 Write-Host "Windows sidecar staged at $Stage"

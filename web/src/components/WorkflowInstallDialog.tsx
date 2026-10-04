@@ -9,6 +9,7 @@ const names: Partial<Record<WorkflowKind, string>> = {
   'character-swap': 'Character Swap',
   'image-to-3d': 'Image to 3D',
   'image-to-3d-v2': 'Image to 3D v2',
+  'unimate-animation': 'Animate 3D model',
 }
 
 interface Props {

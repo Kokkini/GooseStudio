@@ -580,7 +580,7 @@ class ProjectStructureTest(unittest.TestCase):
             if line.startswith("RUNTIME_VERSION = ")
         )
 
-        self.assertEqual(electron_version, "1.1.14")
+        self.assertEqual(electron_version, "1.1.17")
         self.assertEqual(runtime_version, "v1.3.0")
         self.assertIn(runtime_version, (ROOT / "scripts" / "build-runtime-image.sh").read_text(encoding="utf-8"))
         self.assertIn(

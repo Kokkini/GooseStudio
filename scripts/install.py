@@ -419,7 +419,7 @@ def main() -> None:
         ROOT = args.resource_root.resolve()
     if args.modal_cli:
         MODAL_CLI = args.modal_cli.resolve()
-    required = (ROOT / "modal" / "bootstrap.py", ROOT / "modal" / "goose_studio_executor.py", ROOT / "assets" / "models.json", ROOT / "assets" / "allowed-node-classes.json", ROOT / "tools" / "voxelize_glb.py")
+    required = (ROOT / "modal" / "bootstrap.py", ROOT / "modal" / "goose_studio_executor.py", ROOT / "assets" / "models.json", ROOT / "assets" / "allowed-node-classes.json", ROOT / "tools" / "voxelize_glb.py", ROOT / "tools" / "unimate_worker.py")
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         parser.error(f"Missing packaged resources: {', '.join(missing)}")

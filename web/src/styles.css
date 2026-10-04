@@ -101,3 +101,4 @@
 .app-update-actions button:disabled{cursor:wait;opacity:.55}
 .app-update-error{margin:20px 0 0}
 @media(max-width:520px){.app-update-dialog{padding:24px 18px}.app-update-actions{flex-direction:column-reverse}.app-update-actions button{width:100%}}
+.workflow-note,.advanced-hint,.license-note{margin:0;color:var(--muted);font-size:11px;line-height:1.55}.advanced-hint{display:block;margin:13px 0 10px}.field-label input{min-width:0;border:1px solid var(--line);border-radius:9px;padding:10px 12px;background:#fff;color:var(--ink);outline:none}.field-label input:focus{border-color:#90b532;box-shadow:0 0 0 3px #c8ef5840}.license-note a{color:#66851d;font-weight:700}

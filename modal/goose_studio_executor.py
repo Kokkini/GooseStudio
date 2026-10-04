@@ -37,12 +37,16 @@ COMFYUI_URL = "http://127.0.0.1:8188"
 HUNYUAN_CACHE_ROOT = ASSETS_ROOT / "huggingface" / "hub"
 HUNYUAN_ASSET_PATHS_FILE = ASSETS_ROOT / "hunyuan3d-assets.json"
 HUNYUAN_SNAPSHOT_IDS = {"hunyuan3d-paint-pbr", "dinov2-giant"}
+HF_CACHE_SNAPSHOT_IDS = {"unimate-flan-t5-base"}
 VOXEL_MIN_RESOLUTION = 1
 VOXEL_MAX_RESOLUTION = 256
 JOB_FUNCTION_TIMEOUT_SECONDS = 7200
 FUNCTION_CALL_STATUS_CHECK_INTERVAL_SECONDS = 30
 VOXELIZE_SCRIPT_FILE = Path(__file__).resolve().parents[1] / "tools" / "voxelize_glb.py"
 VOXELIZE_SCRIPT_PATH = "/app/voxelize_glb.py"
+UNIMATE_WORKER_SCRIPT_FILE = Path(__file__).resolve().parents[1] / "tools" / "unimate_worker.py"
+UNIMATE_WORKER_SCRIPT_PATH = "/app/unimate_worker.py"
+UNIMATE_GIT_COMMIT = "5d6aabedd947297b5ba6706d8e9113e68c0c3e4f"
 
 app = modal.App(APP_NAME)
 assets_volume = modal.Volume.from_name(ASSETS_VOLUME_NAME, create_if_missing=True)
@@ -61,6 +65,30 @@ voxel_image = (
         "pillow==12.1.1",
     )
     .add_local_file(str(VOXELIZE_SCRIPT_FILE), str(VOXELIZE_SCRIPT_PATH))
+)
+unimate_image = (
+    modal.Image.debian_slim(python_version="3.10")
+    .apt_install(
+        "git",
+        "libgl1",
+        "libegl1",
+        "libglib2.0-0",
+        "libx11-6",
+        "libxrender1",
+        "libxext6",
+        "libxi6",
+        "libxfixes3",
+        "libxkbcommon0",
+        "libsm6",
+        "libice6",
+    )
+    .run_commands(
+        "git init /opt/unimate && git -C /opt/unimate remote add origin https://github.com/Friedrich-M/UniMate.git && git -C /opt/unimate fetch --depth 1 origin "
+        + UNIMATE_GIT_COMMIT
+        + " && git -C /opt/unimate checkout --detach FETCH_HEAD",
+        "python -m pip install --no-build-isolation -r /opt/unimate/requirements.txt",
+    )
+    .add_local_file(str(UNIMATE_WORKER_SCRIPT_FILE), UNIMATE_WORKER_SCRIPT_PATH)
 )
 ALLOWED_NODES_FILE = Path(__file__).resolve().parents[1] / "assets" / "allowed-node-classes.json"
 MODEL_MANIFEST_FILE = Path(__file__).resolve().parents[1] / "assets" / "models.json"
@@ -371,8 +399,46 @@ def install_workflow(workflow: str) -> None:
                     hunyuan_asset_paths["dino_model"] = str(downloaded_root)
                 _save_install_status("running", workflow, offset, total, f"Ready: {snapshot['id']}")
                 continue
+            if snapshot["id"] in HF_CACHE_SNAPSHOT_IDS:
+                cache_root = ASSETS_ROOT / "huggingface" / "hub"
+                repo_cache = cache_root / "models--google--flan-t5-base"
+                ready = any(
+                    (snapshot_dir / "config.json").is_file()
+                    and (snapshot_dir / "model.safetensors").is_file()
+                    and (snapshot_dir / "spiece.model").is_file()
+                    for snapshot_dir in (repo_cache / "snapshots").glob("*")
+                )
+                if not ready:
+                    _save_install_status("running", workflow, offset - 1, total, f"Downloading {snapshot['id']}")
+                    cache_root.mkdir(parents=True, exist_ok=True)
+                    stop, thread = _start_download_heartbeat(workflow, offset - 1, total, snapshot["id"])
+                    try:
+                        snapshot_download(
+                            repo_id=snapshot["repository"],
+                            revision=snapshot.get("revision"),
+                            allow_patterns=snapshot.get("allow_patterns"),
+                            cache_dir=cache_root,
+                            token=os.getenv("HF_TOKEN") or None,
+                        )
+                    finally:
+                        stop.set()
+                        thread.join(timeout=2)
+                _save_install_status("running", workflow, offset, total, f"Ready: {snapshot['id']}")
+                continue
             destination = ASSETS_ROOT / "models" / snapshot["destination"]
-            if not destination.exists() or not any(destination.iterdir()):
+            if snapshot["id"] == "unimate-checkpoint-v2":
+                checkpoint_root = destination / "unimate_uniml3d_f60_v2"
+                ready = all(
+                    path.is_file()
+                    for path in (
+                        checkpoint_root / "config.json",
+                        checkpoint_root / "dataset_stats.npy",
+                        checkpoint_root / "checkpoints" / "checkpoint_step_100000.pt",
+                    )
+                )
+            else:
+                ready = destination.exists() and any(destination.iterdir())
+            if not ready:
                 _save_install_status("running", workflow, offset - 1, total, f"Downloading {snapshot['id']}")
                 destination.mkdir(parents=True, exist_ok=True)
                 stop, thread = _start_download_heartbeat(workflow, offset - 1, total, snapshot["id"])
@@ -590,6 +656,7 @@ def _collect_outputs(
 def _content_type(path: Path) -> str:
     known = {
         ".glb": "model/gltf-binary",
+        ".blend": "application/x-blender",
         ".gltf": "model/gltf+json",
         ".vox": "application/octet-stream",
         ".zip": "application/zip",
@@ -644,6 +711,28 @@ def _voxel_input_path(job_id: str, input_name: str) -> Path:
     path = (input_root / filename).resolve()
     if not path.is_relative_to(input_root):
         raise ValueError("input_name points outside the job input directory")
+    return path
+
+
+def _unimate_input_path(job_id: str, input_name: str, label: str) -> Path:
+    if not isinstance(input_name, str) or not input_name or "\\" in input_name:
+        raise ValueError(f"{label} must be a relative uploaded GLB or FBX filename")
+    candidate = Path(input_name)
+    if candidate.is_absolute() or any(part in {"", ".", ".."} for part in candidate.parts):
+        raise ValueError(f"{label} must be a relative uploaded GLB or FBX filename")
+    parts = candidate.parts
+    if len(parts) == 2 and parts[0] == job_id:
+        filename = parts[1]
+    elif len(parts) == 1:
+        filename = parts[0]
+    else:
+        raise ValueError(f"{label} must identify one uploaded file")
+    if Path(filename).suffix.lower() not in {".glb", ".fbx"}:
+        raise ValueError(f"{label} must use .glb or .fbx format")
+    input_root = (IO_ROOT / "input" / job_id).resolve()
+    path = (input_root / filename).resolve()
+    if not path.is_relative_to(input_root):
+        raise ValueError(f"{label} points outside the job input directory")
     return path
 
 
@@ -742,6 +831,91 @@ def _process_voxel_job(job_id: str, input_name: str, resolution: int) -> None:
         _save_status(
             job_id,
             {"job_id": job_id, "status": "failed", "error": str(exc), "updated_at": _now()},
+        )
+        io_volume.commit()
+        raise
+
+
+def _process_unimate_job(job_id: str) -> None:
+    try:
+        io_volume.reload()
+        assets_volume.reload()
+        job = _job_dir(job_id)
+        operation = json.loads((job / "operation.json").read_text(encoding="utf-8"))
+        if operation.get("operation") != "unimate-animation":
+            raise ValueError("This job does not contain a UniMate animation request")
+        asset_path = _unimate_input_path(job_id, operation.get("asset_name", ""), "asset_name")
+        clip_name = operation.get("clip_name")
+        clip_path = _unimate_input_path(job_id, clip_name, "clip_name") if clip_name else None
+        prompt = operation.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("A motion prompt is required")
+
+        status = {
+            "job_id": job_id,
+            "status": "running",
+            "outputs": [],
+            "started_at": _now(),
+            "updated_at": _now(),
+            "message": "Preparing the rig and motion pipeline",
+        }
+        _save_status(job_id, status)
+        io_volume.commit()
+
+        def report_progress(message: str) -> None:
+            status["message"] = message
+            status["updated_at"] = _now()
+            _save_status(job_id, status)
+            io_volume.commit()
+
+        spec = importlib.util.spec_from_file_location(
+            "goose_studio_unimate_worker", UNIMATE_WORKER_SCRIPT_PATH
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError("UniMate worker code is missing from the deployed image")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        output_path = IO_ROOT / "output" / "unimate" / job_id / "animated_model.glb"
+        generated = module.run_unimate(
+            asset_path=asset_path,
+            clip_path=clip_path,
+            prompt=prompt.strip(),
+            face_r=operation.get("face_r"),
+            face_l=operation.get("face_l"),
+            job_root=job / "unimate",
+            output_path=output_path,
+            progress=report_progress,
+        )
+        outputs = [
+            _output_record(generated, job_id, node_id="unimate-animation"),
+            _output_record(generated.with_suffix(".blend"), job_id, index=1, node_id="unimate-animation"),
+        ]
+        _save_status(
+            job_id,
+            {
+                **status,
+                "status": "completed",
+                "outputs": outputs,
+                "updated_at": _now(),
+                "message": "Animated model and Blender project ready",
+            },
+        )
+        io_volume.commit()
+    except Exception as exc:
+        traceback.print_exc()
+        try:
+            current = _load_status(job_id)
+        except (FileNotFoundError, json.JSONDecodeError):
+            current = {"job_id": job_id, "outputs": []}
+        _save_status(
+            job_id,
+            {
+                **current,
+                "job_id": job_id,
+                "status": "failed",
+                "error": str(exc),
+                "updated_at": _now(),
+            },
         )
         io_volume.commit()
         raise
@@ -892,6 +1066,18 @@ def process_voxel_job(job_id: str, input_name: str, resolution: int) -> None:
     _process_voxel_job(job_id, input_name, resolution)
 
 
+@app.function(
+    image=unimate_image,
+    gpu=IMAGE_GPU_TYPE,
+    timeout=JOB_FUNCTION_TIMEOUT_SECONDS,
+    max_containers=1,
+    scaledown_window=60,
+    volumes={str(ASSETS_ROOT): assets_volume, str(IO_ROOT): io_volume},
+)
+def process_unimate_job(job_id: str) -> None:
+    _process_unimate_job(job_id)
+
+
 def _api():
     from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
     from fastapi.middleware.cors import CORSMiddleware
@@ -1008,6 +1194,69 @@ def _api():
         )
         io_volume.commit()
         call = process_voxel_job.spawn(job_id, input_name, resolution)
+        _atomic_json(job / "call.json", {"call_id": call.object_id})
+        io_volume.commit()
+        return {"job_id": job_id, "status": "queued"}
+
+    @api.post("/unimate")
+    def submit_unimate(payload: dict, _: None = Depends(authorize)):
+        job_id = payload.get("job_id", "")
+        asset_name = payload.get("asset_name", "")
+        clip_name = payload.get("clip_name")
+        prompt = payload.get("prompt")
+        face_r = payload.get("face_r")
+        face_l = payload.get("face_l")
+        try:
+            job = _job_dir(job_id)
+            asset_path = _unimate_input_path(job_id, asset_name, "asset_name")
+            clip_path = _unimate_input_path(job_id, clip_name, "clip_name") if clip_name else None
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if clip_name is not None and not isinstance(clip_name, str):
+            raise HTTPException(status_code=400, detail="clip_name must be a filename or null")
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt.strip()) > 1000:
+            raise HTTPException(status_code=400, detail="prompt must contain 1 to 1000 characters")
+        if face_r is not None and (not isinstance(face_r, str) or len(face_r) > 128):
+            raise HTTPException(status_code=400, detail="face_r must be a bone name up to 128 characters")
+        if face_l is not None and (not isinstance(face_l, str) or len(face_l) > 128):
+            raise HTTPException(status_code=400, detail="face_l must be a bone name up to 128 characters")
+        face_r = face_r.strip() if isinstance(face_r, str) else ""
+        face_l = face_l.strip() if isinstance(face_l, str) else ""
+        if bool(face_r) != bool(face_l):
+            raise HTTPException(status_code=400, detail="Provide both facing bone names, or leave both blank")
+
+        assets_volume.reload()
+        if "unimate-animation" not in _installation().get("installed_workflows", []):
+            raise HTTPException(status_code=409, detail="Install the UniMate workflow before submitting a job")
+        io_volume.reload()
+        if not asset_path.is_file():
+            raise HTTPException(status_code=400, detail="Uploaded GLB or FBX model not found")
+        if clip_path is not None and not clip_path.is_file():
+            raise HTTPException(status_code=400, detail="Uploaded GLB or FBX animation not found")
+
+        _atomic_json(
+            job / "operation.json",
+            {
+                "operation": "unimate-animation",
+                "asset_name": asset_name,
+                "clip_name": clip_name,
+                "prompt": prompt.strip(),
+                "face_r": face_r or None,
+                "face_l": face_l or None,
+            },
+        )
+        _save_status(
+            job_id,
+            {
+                "job_id": job_id,
+                "status": "queued",
+                "outputs": [],
+                "updated_at": _now(),
+                "message": "Waiting for a Modal GPU",
+            },
+        )
+        io_volume.commit()
+        call = process_unimate_job.spawn(job_id)
         _atomic_json(job / "call.json", {"call_id": call.object_id})
         io_volume.commit()
         return {"job_id": job_id, "status": "queued"}

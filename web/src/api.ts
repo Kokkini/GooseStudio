@@ -54,6 +54,21 @@ export function submitVoxelizationJob(config: RuntimeConfig, jobId: string, inpu
   })
 }
 
+export function submitUniMateJob(config: RuntimeConfig, payload: {
+  job_id: string
+  asset_name: string
+  clip_name?: string
+  prompt: string
+  face_r?: string
+  face_l?: string
+}) {
+  return request(url(config, 'unimate'), {
+    method: 'POST',
+    headers: { ...authHeaders(config), 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+}
+
 export function getJob(config: RuntimeConfig, jobId: string) {
   return request<Job>(`${url(config, 'status')}?job_id=${encodeURIComponent(jobId)}`, {
     headers: authHeaders(config),

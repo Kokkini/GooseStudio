@@ -1,7 +1,7 @@
 import { ArrowRight, Box, Check, ChevronDown, ChevronLeft, ChevronRight, CircleAlert, Clock3, CloudCog, Download, ExternalLink, FlaskConical, Image, LoaderCircle, RefreshCw, Shirt, Sparkles, Trash2, Video, WandSparkles, X } from 'lucide-react'
 import gooseStudioLogo from './assets/logo-abstract-orbit.svg'
 import { createElement, useEffect, useRef, useState } from 'react'
-import { cancelJob, checkConnection, deleteJob, downloadOutput, getJob, getWorkflowCapabilities, installWorkflow, submitJob, submitVoxelizationJob, uploadInputs } from './api.ts'
+import { cancelJob, checkConnection, deleteJob, downloadOutput, getJob, getWorkflowCapabilities, installWorkflow, submitJob, submitUniMateJob, submitVoxelizationJob, uploadInputs } from './api.ts'
 import FileDrop from './components/FileDrop.tsx'
 import AppLogDialog from './components/AppLogDialog.tsx'
 import AppUpdateDialog, { type AppUpdateDialogState } from './components/AppUpdateDialog.tsx'
@@ -20,6 +20,7 @@ const workflows = [
   { id: 'image-edit' as const, name: 'Image Edit', summary: 'Restyle, relight, or transform any image', icon: WandSparkles, color: 'amber' },
   { id: 'try-on' as const, name: 'Virtual Try-On', summary: 'Put product clothing on any person', icon: Shirt, color: 'rose' },
   { id: 'voxelize' as const, name: 'Voxelize 3D model', summary: 'Turn a GLB model into a .vox file', icon: Box, color: 'cyan' },
+  { id: 'unimate-animation' as const, name: 'Animate 3D model', summary: 'Generate an animation for a rigged 3D model', icon: Sparkles, color: 'cyan' },
   { id: 'lite-upscale' as const, name: 'Image Upscale', summary: 'Upscale one image to four times its size', icon: FlaskConical, color: 'lime' },
 ]
 
@@ -246,7 +247,7 @@ export default function App() {
         else if (next.status === 'failed') { stopPolling(jobId); appendAppLog(`${workflow} job ${jobId} failed: ${next.error || 'Generation failed'}`); updateCurrentWorkflowRun(workflow, jobId, { job: next, state: 'failed', message: next.error || 'Generation failed' }) }
         else {
           const cpuJob = workflow === 'voxelize'
-          updateCurrentWorkflowRun(workflow, jobId, { job: next, state: next.status === 'running' ? 'running' : 'queued', message: next.status === 'running' ? (cpuJob ? 'Converting on Modal' : 'Creating on your Modal GPU') : (cpuJob ? 'Waiting for Modal' : 'Waiting for a GPU') })
+          updateCurrentWorkflowRun(workflow, jobId, { job: next, state: next.status === 'running' ? 'running' : 'queued', message: next.message || (next.status === 'running' ? (cpuJob ? 'Converting on Modal' : 'Creating on your Modal GPU') : (cpuJob ? 'Waiting for Modal' : 'Waiting for a GPU')) })
           schedule(5000)
         }
       } catch (error) {
@@ -304,6 +305,36 @@ export default function App() {
     } catch (error) {
       appendAppLog(`voxelize job failed before completion: ${(error as Error).message}`)
       updateCurrentWorkflowRun('voxelize', jobId, { state: 'failed', message: (error as Error).message })
+    }
+  }
+
+  const runUniMate = async (asset: File, clip: File | null, prompt: string, faceR: string, faceL: string, repeat: () => void) => {
+    const workflow: WorkflowKind = 'unimate-animation'
+    if (!connected) { setSetupOpen(true); return }
+    if (!workflowReady(workflow, installed)) { await startInstall(workflow); return }
+    const jobId = crypto.randomUUID()
+    const files = clip ? [asset, clip] : [asset]
+    const names = files.map((file) => remoteName(file, jobId))
+    updateWorkflowRun(workflow, { job: { job_id: jobId, status: 'preparing', outputs: [] }, state: 'uploading', message: 'Uploading your model directly to Modal', retry: repeat })
+    try {
+      appendAppLog(`Starting ${workflow} job ${jobId}`)
+      const uploadMap = new Map(names.map((name, index) => [name.split('/')[1], files[index]]))
+      await uploadInputs(config, jobId, uploadMap)
+      updateCurrentWorkflowRun(workflow, jobId, { state: 'preparing', message: 'Preparing the rig and reference motion' })
+      await submitUniMateJob(config, {
+        job_id: jobId,
+        asset_name: names[0],
+        ...(names[1] ? { clip_name: names[1] } : {}),
+        prompt: prompt.trim(),
+        ...(faceR.trim() ? { face_r: faceR.trim() } : {}),
+        ...(faceL.trim() ? { face_l: faceL.trim() } : {}),
+      })
+      appendAppLog(`Submitted ${workflow} job ${jobId}`)
+      updateCurrentWorkflowRun(workflow, jobId, { job: { job_id: jobId, status: 'queued', outputs: [] }, state: 'queued', message: 'Waiting for a GPU' })
+      poll(jobId, workflow)
+    } catch (error) {
+      appendAppLog(`${workflow} job failed before completion: ${(error as Error).message}`)
+      updateCurrentWorkflowRun(workflow, jobId, { state: 'failed', message: (error as Error).message })
     }
   }
 
@@ -409,6 +440,7 @@ export default function App() {
               {kind === 'image-to-3d' && <ImageTo3DForm run={run} installed={workflowReady(kind, installed)} install={() => startInstall(kind)} />}
               {kind === 'image-to-3d-v2' && <ImageTo3DForm workflow="image-to-3d-v2" run={run} installed={workflowReady(kind, installed)} install={() => startInstall(kind)} />}
               {kind === 'voxelize' && <VoxelizeForm run={runVoxelize} />}
+              {kind === 'unimate-animation' && <UniMateForm run={runUniMate} installed={workflowReady(kind, installed)} install={() => startInstall(kind)} />}
             </div>
             <ResultPanel state={selectedRun.state} message={selectedRun.message} job={selectedRun.job} config={config} onCancel={cancel} onRetry={selectedRun.retry} />
           </div>
@@ -429,6 +461,7 @@ type RunOptions = { postprocess?: VoxelizationOptions }
 type Run = (workflow: WorkflowKind, files: File[], build: (names: string[], id: string) => Promise<Record<string, unknown>[]>, repeat: () => void, options?: RunOptions) => Promise<void>
 type InstallableFormProps = { run: Run; installed: boolean; install: () => void }
 type VoxelizeRun = (file: File, resolution: number, repeat: () => void) => Promise<void>
+type UniMateRun = (asset: File, clip: File | null, prompt: string, faceR: string, faceL: string, repeat: () => void) => Promise<void>
 type ActiveWorkflowRun = { job: Job | null; state: JobState; message: string; retry: null | (() => void) }
 type ActiveWorkflowRuns = Partial<Record<WorkflowKind, ActiveWorkflowRun>>
 
@@ -458,7 +491,7 @@ function StartupLoadingScreen() {
 }
 
 function HistoryCard({ item, config, onOpen, onDelete }: { item: Job; config: RuntimeConfig; onOpen: () => void; onDelete: () => void }) {
-  const label = item.workflow?.replaceAll('-', ' ') || 'creation'
+  const label = item.workflow === 'unimate-animation' ? 'Animate 3D model' : item.workflow?.replaceAll('-', ' ') || 'creation'
   const output = item.outputs[0]
   return <article className="history-card"><button className="history-card-open" type="button" onClick={onOpen}>{output && isImageOutput(output) ? <OutputThumbnail output={output} jobId={item.job_id} config={config} /> : output && isModelOutput(output) ? <div className="model-thumb"><Box /></div> : <div className="video-thumb"><Video /></div>}<span><strong>{label}</strong><small>{item.completed_at ? new Date(item.completed_at).toLocaleString() : 'Completed'}</small></span></button><button className="history-delete" type="button" onClick={onDelete} aria-label={`Delete ${label} creation`} title="Delete creation"><Trash2 size={15} /></button></article>
 }
@@ -493,6 +526,41 @@ function VoxelizeForm({ run }: { run: VoxelizeRun }) {
   const submit = () => { if (!file) return; run(file, resolution, submit) }
   const estimate = file ? estimateWorkflow('voxelize', { voxelResolution: resolution }) : null
   return <div className="workflow-form"><div className="lite-callout"><Box /><div><strong>Voxel model</strong><small>Upload a GLB model and Goose Studio will create a MagicaVoxel .vox file.</small></div></div><FileDrop label="3D model to voxelize" hint="Upload a .glb file" accept=".glb,model/gltf-binary" file={file} onChange={setFile} /><VoxelResolution value={resolution} setValue={setResolution} /><WorkflowButton installed disabled={!file} install={() => undefined} generate={submit} estimate={estimate}><Box /> Create .vox file</WorkflowButton></div>
+}
+
+function UniMateForm({ run, installed, install }: { run: UniMateRun; installed: boolean; install: () => void }) {
+  const [asset, setAsset] = useState<File | null>(null)
+  const [clip, setClip] = useState<File | null>(null)
+  const [prompt, setPrompt] = useState('')
+  const [faceR, setFaceR] = useState('')
+  const [faceL, setFaceL] = useState('')
+  const supportedModel = (file: File | null) => Boolean(file && /\.(glb|fbx)$/i.test(file.name))
+  const selectAsset = (file: File | null) => setAsset(file)
+  const selectClip = (file: File | null) => setClip(file)
+  const error = asset && !supportedModel(asset)
+    ? 'Choose a .glb or .fbx model file.'
+    : clip && !supportedModel(clip)
+      ? 'Choose a .glb or .fbx animation file.'
+      : ''
+  const validFacePair = Boolean(faceR.trim()) === Boolean(faceL.trim())
+  const valid = supportedModel(asset) && (!clip || supportedModel(clip)) && Boolean(prompt.trim()) && validFacePair
+  const submit = () => {
+    if (!asset || !valid) return
+    run(asset, clip, prompt, faceR, faceL, submit)
+  }
+  return <div className="workflow-form">
+    <div className="lite-callout"><Sparkles /><div><strong>Text prompt to rigged motion</strong><small>Creates one 2-second animation at 30 fps and applies it to your model.</small></div></div>
+    <p className="workflow-note">Upload a skinned, rigged model in .glb or .fbx format. This checkpoint supports skeletons with 5–60 joints.</p>
+    <p className="workflow-note">First install downloads about 2.2 GB of model weights to your Modal storage.</p>
+    <FileDrop label="Rigged 3D model" hint="A self-contained .glb is recommended" accept=".glb,.fbx,model/gltf-binary,application/octet-stream" file={asset} onChange={selectAsset} />
+    <FileDrop compact label="Optional animation clip" hint="Same bone names and parent hierarchy; used as a skeleton reference, not copied." accept=".glb,.fbx,model/gltf-binary,application/octet-stream" file={clip} onChange={selectClip} />
+    <label className="field-label">Describe the motion<textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={4} maxLength={1000} placeholder="Example: A brown bear walks forward at a relaxed pace, then pauses and looks around." /></label>
+    <details className="advanced"><summary>Advanced facing direction <ChevronDown /></summary><small className="advanced-hint">Optional. Add both bone names only if you want to set the character's facing direction explicitly.</small><label className="field-label">Right-facing bone<input value={faceR} onChange={(event) => setFaceR(event.target.value)} maxLength={128} placeholder="Example: RightHindHip" /></label><label className="field-label">Left-facing bone<input value={faceL} onChange={(event) => setFaceL(event.target.value)} maxLength={128} placeholder="Example: LeftHindHip" /></label></details>
+    <p className="license-note">The pretrained UniMate weights are licensed for non-commercial use. <a href="https://huggingface.co/Linzhan/UniMate" target="_blank" rel="noreferrer">Read the model license</a>.</p>
+    {error && <small className="form-error">{error}</small>}
+    {!validFacePair && <small className="form-error">Enter both facing bone names, or leave both blank.</small>}
+    <WorkflowButton installed={installed} disabled={!valid} install={install} generate={submit}><Sparkles /> Animate model</WorkflowButton>
+  </div>
 }
 
 function VoxelResolution({ value, setValue }: { value: number; setValue: (value: number) => void }) {
@@ -609,7 +677,7 @@ function OutputThumbnail({ output, jobId, config }: { output: OutputFile; jobId:
 
 function isImageOutput(output: OutputFile) { return output.content_type.startsWith('image/') }
 
-function isModelOutput(output: OutputFile) { return output.content_type.startsWith('model/') || /\.(glb|gltf|obj|fbx|stl|3mf|dae|usdz|vox|zip)$/i.test(output.filename) }
+function isModelOutput(output: OutputFile) { return output.content_type.startsWith('model/') || /\.(glb|gltf|blend|obj|fbx|stl|3mf|dae|usdz|vox|zip)$/i.test(output.filename) }
 
 function isVoxelPackage(output: OutputFile) { return output.filename.toLowerCase().endsWith('.zip') }
 
@@ -623,6 +691,7 @@ function OutputMedia({ output, jobId, config }: { output: OutputFile; jobId: str
   const [downloadError, setDownloadError] = useState('')
   const [modelPreview, setModelPreview] = useState<ModalModelPreview | null>(null)
   const previewable = isGlbOutput(output)
+  const blenderProject = output.filename.toLowerCase().endsWith('.blend')
   useEffect(() => () => {
     if (modelPreview) void releaseModelPreview(modelPreview)
   }, [modelPreview])
@@ -639,13 +708,14 @@ function OutputMedia({ output, jobId, config }: { output: OutputFile; jobId: str
     catch (reason) { setDownloadError((reason as Error).message) }
     finally { setDownloading(false) }
   }
-  const readyLabel = isModel ? (isVoxelPackage(output) ? '3D package ready' : '3D model ready') : 'Video ready'
+  const readyLabel = blenderProject ? 'Blender project ready' : isModel ? (output.node_id === 'unimate-animation' ? 'Animated model ready' : isVoxelPackage(output) ? '3D package ready' : '3D model ready') : 'Video ready'
   return <div className="output-media">
-    {modelPreview ? createElement('model-viewer', { className: 'model-output-viewer', src: modelPreview.src, alt: `3D preview of ${output.filename}`, 'camera-controls': true, 'auto-rotate': true, 'touch-action': 'pan-y', 'shadow-intensity': '1' })
+    {modelPreview ? createElement('model-viewer', { className: 'model-output-viewer', src: modelPreview.src, alt: `3D preview of ${output.filename}`, 'camera-controls': true, 'auto-rotate': true, autoplay: output.node_id === 'unimate-animation', loop: output.node_id === 'unimate-animation', 'touch-action': 'pan-y', 'shadow-intensity': '1' })
       : source ? (imageOutput ? <img src={source} alt="Generated output" /> : isModel ? <div className="model-output"><Box /><strong>{readyLabel}</strong><small>{output.filename}</small></div> : <video src={source} controls />)
       : isModel ? <div className="model-output"><Box /><strong>{readyLabel}</strong><small>{output.filename}</small></div>
         : <div className="result-placeholder">{error ? <CircleAlert className="error-icon" /> : <LoaderCircle className="spin" />}<small>{error || 'Loading output...'}</small></div>}
-    <div className="output-download-area"><button type="button" onClick={() => void download()} disabled={downloading}><Download size={16} /> {downloading ? 'Downloading from Modal…' : 'Download'}</button>{downloadError && <small role="alert">{downloadError}</small>}</div>
+    {blenderProject && <small>Open directly in Blender. Bone helpers are hidden and the animation is ready to play.</small>}
+    <div className="output-download-area"><button type="button" onClick={() => void download()} disabled={downloading}><Download size={16} /> {downloading ? 'Downloading from Modal…' : blenderProject ? 'Download for Blender' : 'Download'}</button>{downloadError && <small role="alert">{downloadError}</small>}</div>
   </div>
 }
 

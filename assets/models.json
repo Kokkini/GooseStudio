@@ -257,6 +257,31 @@
         "bigvgan_generator.pt",
         "config.json"
       ]
+    },
+    {
+      "id": "unimate-checkpoint-v2",
+      "repository": "Linzhan/UniMate",
+      "revision": "902b8465567159a974de2d10f129e29787b9e4e4",
+      "destination": "unimate",
+      "allow_patterns": [
+        "unimate_uniml3d_f60_v2/config.json",
+        "unimate_uniml3d_f60_v2/dataset_stats.npy",
+        "unimate_uniml3d_f60_v2/checkpoints/checkpoint_step_100000.pt"
+      ]
+    },
+    {
+      "id": "unimate-flan-t5-base",
+      "repository": "google/flan-t5-base",
+      "destination": "huggingface/hub",
+      "allow_patterns": [
+        "config.json",
+        "generation_config.json",
+        "model.safetensors",
+        "special_tokens_map.json",
+        "spiece.model",
+        "tokenizer.json",
+        "tokenizer_config.json"
+      ]
     }
   ],
   "workflows": {
@@ -267,6 +292,7 @@
     "character-swap": ["sam3-multiplex", "clip-vision-h", "umt5-xxl-fp8", "wan-2.1-vae", "wan-animate-14b-fp8", "wan-animate-relight-lora", "lightx2v-wan-i2v-lora", "vitpose-wholebody-onnx", "vitpose-wholebody-data", "yolov10m", "seedvr2-3b-fp8", "seedvr2-vae-fp16", "seedvc-small", "seedvc-f0-44k", "seedvc-campplus", "seedvc-rmvpe", "whisper-small", "bigvgan-22khz", "bigvgan-44khz"],
     "image-to-3d": ["hunyuan3d-dit-v2-1-fp16", "hunyuan3d-vae-v2-1-fp16", "hunyuan3d-paint-pbr", "dinov2-giant"],
     "image-to-3d-v2": ["trellis2-int8-convrot", "trellis2-shape-vae-bf16", "trellis2-texture-vae-bf16", "trellis2-dinov3-l", "trellis2-birefnet", "trellis2-pixal3d-int8-convrot", "trellis2-moge-vitl-normal"],
-    "voxelize": []
+    "voxelize": [],
+    "unimate-animation": ["unimate-checkpoint-v2", "unimate-flan-t5-base"]
   }
 }

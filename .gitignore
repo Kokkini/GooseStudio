@@ -1,4 +1,5 @@
 build/
+temp/
 image_custom_nodes/
 __pycache__/
 *.pyc

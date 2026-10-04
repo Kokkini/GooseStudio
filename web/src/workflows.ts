@@ -1,6 +1,6 @@
 import type { Workflow, WorkflowKind } from './types.ts'
 
-type ComfyWorkflowKind = Exclude<WorkflowKind, 'voxelize'>
+type ComfyWorkflowKind = Exclude<WorkflowKind, 'voxelize' | 'unimate-animation'>
 
 const urls: Record<ComfyWorkflowKind, URL> = {
   'lite-upscale': new URL('../workflows/lite-upscale.json', import.meta.url),
@@ -185,4 +185,5 @@ export const outputNodes: Record<WorkflowKind, string[]> = {
   'image-to-3d': ['57'],
   'image-to-3d-v2': ['322'],
   voxelize: [],
+  'unimate-animation': [],
 }
